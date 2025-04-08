@@ -1,26 +1,132 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+/* 1. Define Theme Variables */
+@theme {
+  /* Colors */
+  --color-arcade-bg: #1a1a1a;
+  --color-arcade-white: #e0e0e0;
+  --color-logo-yellow: #F7B731;
+  --color-logo-orange: #F07818;
+  --color-logo-red: #D83028;
+  --color-arcade-blue: #00FFFF;
+  --color-arcade-purple: #9370DB;
+  --color-arcade-green: #39FF14;
+  --color-arcade-gray: #888888;
+  --color-arcade-dark-gray: #444444;
+  --color-black: #000000; /* Explicit black for shadows/borders */
+
+  /* Fonts */
+  --font-pixel: 'PixelFont', monospace;
+  /* Keep default sans-serif stack for inputs/readability */
+  /* --font-sans: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji"; */
+
+  /* Shadows (as variables for consistency) */
+  --shadow-arcade-sm: 4px 4px 0px 0px var(--color-black);
+  --shadow-arcade-md: 6px 6px 0px 0px var(--color-black);
+  --shadow-arcade-lg: 8px 8px 0px 0px var(--color-black);
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+/* 2. Load Fonts */
+@font-face {
+  font-family: 'PixelFont';
+  src: url('/fonts/PressStart2P-Regular.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* 3. Define Animations */
+@keyframes blinker {
+  50% {
+    opacity: 0;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* 4. Base Styles */
+@layer base {
+  body {
+    background-color: var(--color-arcade-bg);
+    color: var(--color-arcade-white);
+    font-family: var(--font-pixel);
+    /* Optional: Improve pixel font rendering if needed */
+    /* image-rendering: pixelated; */
+    /* -webkit-font-smoothing: none; */
+  }
+}
+
+/* 5. Utility Classes (like blink) */
+@layer utilities {
+  .blink {
+    animation: blinker 1s linear infinite;
+  }
+  /* Direct shadow utilities using variables */
+  .shadow-arcade-sm { box-shadow: var(--shadow-arcade-sm); }
+  .shadow-arcade-md { box-shadow: var(--shadow-arcade-md); }
+  .shadow-arcade-lg { box-shadow: var(--shadow-arcade-lg); }
+}
+
+/* 6. Component Styles */
+@layer components {
+  /* Base Button Style */
+  .btn-arcade {
+    font-family: var(--font-pixel);
+    /* Apply base structural and interactive styles */
+    @apply text-xl py-2 px-5 m-2 rounded border-2 border-[--color-black] 
+           transition-all duration-150 relative /* Added relative for potential pseudo-elements */
+           focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-[--color-arcade-bg];
+    box-shadow: var(--shadow-arcade-sm);
+  }
+  .btn-arcade:hover {
+     box-shadow: var(--shadow-arcade-md);
+  }
+  .btn-arcade:active {
+     box-shadow: none;
+     transform: translate(2px, 2px);
+  }
+
+  /* Button Color Variants - ONLY define variant-specific styles */
+  .btn-arcade-primary {
+    /* REMOVED @apply btn-arcade */
+    @apply bg-[--color-logo-yellow] text-[--color-black] hover:bg-[--color-logo-orange] focus:ring-[--color-logo-yellow];
+  }
+  .btn-arcade-secondary {
+    /* REMOVED @apply btn-arcade */
+    @apply bg-[--color-arcade-blue] text-[--color-black] hover:bg-cyan-300 focus:ring-[--color-arcade-blue];
+  }
+  .btn-arcade-action {
+    /* REMOVED @apply btn-arcade */
+    @apply bg-[--color-arcade-green] text-[--color-black] hover:bg-lime-400 focus:ring-[--color-arcade-green];
+  }
+  .btn-arcade-danger {
+    /* REMOVED @apply btn-arcade */
+    @apply bg-[--color-logo-red] text-[--color-arcade-white] hover:bg-red-700 focus:ring-[--color-logo-red];
+  }
+  .btn-arcade-disabled {
+    /* REMOVED @apply btn-arcade */
+    /* Apply necessary base styles that need overriding/setting for disabled state */
+    @apply font-pixel text-xl py-2 px-5 m-2 rounded border-2 /* Re-apply structural if needed */
+           bg-[--color-arcade-dark-gray] text-[--color-arcade-gray] border-[--color-arcade-dark-gray] 
+           shadow-none cursor-not-allowed opacity-70;
+    /* Explicitly disable hover/active effects that might leak from base */
+     box-shadow: none !important;
+     transform: none !important;
+  }
+
+  /* Input Field */
+  .input-arcade {
+    @apply block p-2.5 w-full text-sm rounded-lg border font-sans /* Use standard font */
+           bg-gray-700 border-gray-600 placeholder-gray-400 text-white 
+           focus:ring-[--color-arcade-blue] focus:border-[--color-arcade-blue] disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  /* Label */
+  .label-arcade {
+      @apply block mb-2 text-lg font-medium text-[--color-arcade-white] text-left font-pixel; /* Use pixel font for labels */
+  }
+
+  /* Card */
+  .card-arcade {
+      @apply bg-black/30 border-2 border-[--color-arcade-dark-gray] p-4 rounded;
+      box-shadow: var(--shadow-arcade-md);
+  }
 }
