@@ -122,78 +122,160 @@ function AnimationRunner({ mixer }: AnimationRunnerProps) {
     return null; // This component doesn't render anything itself
 }
 
-interface CharacterViewerProps {
-    modelUrl: string;
-}
-
-// --- Animation Clip Creation (Restored) ---
-// Modify bone names and rotations based on console logs and desired pose
-function createFightStanceClip(skeleton: THREE.Skeleton | null, initialPose: Record<string, any>, boneTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, duration: number = 0.5): THREE.AnimationClip | null {
+// Restore createFightStanceClip function
+function createFightStanceClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, any>, 
+    boneTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
+    clipName: string = 'FightStance', // Default name
+    duration: number = 0.5
+): THREE.AnimationClip | null { 
     if (!skeleton || Object.keys(initialPose).length === 0) return null;
-
     const tracks: THREE.KeyframeTrack[] = [];
     const times = [0, duration];
     const deg = THREE.MathUtils.degToRad;
-
-    console.log("--- Creating Fight Stance Clip ---");
-
+    console.log(`--- Creating Clip: ${clipName} ---`);
     skeleton.bones.forEach(bone => {
         const boneName = bone.name;
-        const target = boneTargets[boneName];
+        const targetInfo = boneTargets[boneName];
         const initial = initialPose[boneName];
-
-        if (!initial) {
-             console.warn(`No initial pose data for bone: ${boneName}`);
-             return;
-        }
-
+        if (!initial) { /* console.warn(`No initial pose for ${boneName}`); */ return; } // Quieten log
         const startQuat: THREE.Quaternion = initial.quat;
         let endQuat = startQuat.clone();
-
-        if (target?.rotation) {
-            const eulerOrder = target.eulerOrder || 'XYZ';
-            const targetEulerDeg = target.rotation;
+        if (targetInfo?.rotation) {
+            const eulerOrder = targetInfo.eulerOrder || 'XYZ';
+            const r = targetInfo.rotation;
             const initialEuler = new THREE.Euler().setFromQuaternion(startQuat, eulerOrder);
             const endEulerRad = new THREE.Euler(
-                deg(targetEulerDeg.x ?? THREE.MathUtils.radToDeg(initialEuler.x)),
-                deg(targetEulerDeg.y ?? THREE.MathUtils.radToDeg(initialEuler.y)),
-                deg(targetEulerDeg.z ?? THREE.MathUtils.radToDeg(initialEuler.z)),
+                deg(r.x ?? THREE.MathUtils.radToDeg(initialEuler.x)),
+                deg(r.y ?? THREE.MathUtils.radToDeg(initialEuler.y)),
+                deg(r.z ?? THREE.MathUtils.radToDeg(initialEuler.z)),
                 eulerOrder
             );
             endQuat.setFromEuler(endEulerRad);
-            console.log(`  ${boneName}: Target Euler(${eulerOrder}) = x: ${targetEulerDeg.x?.toFixed(1) ?? 'init'}, y: ${targetEulerDeg.y?.toFixed(1) ?? 'init'}, z: ${targetEulerDeg.z?.toFixed(1) ?? 'init'}`);
+            // console.log(`  ${boneName} (${eulerOrder}): x:${r.x?.toFixed(1)}, y:${r.y?.toFixed(1)}, z:${r.z?.toFixed(1)}`); // Quieten log
         }
-
-        if (target || !endQuat.equals(startQuat)) {
-            tracks.push(new THREE.QuaternionKeyframeTrack(
-                `${boneName}.quaternion`,
-                times,
-                [startQuat.x, startQuat.y, startQuat.z, startQuat.w, endQuat.x, endQuat.y, endQuat.z, endQuat.w]
-            ));
+        // Only add track if end is different (or target specified, to be safe)
+        if (targetInfo || !endQuat.equals(startQuat)) {
+            tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, [startQuat.x, startQuat.y, startQuat.z, startQuat.w, endQuat.x, endQuat.y, endQuat.z, endQuat.w]));
         }
     });
-    console.log("----------------------------------");
-    if (tracks.length === 0) {
-        console.warn("No tracks generated for fight stance clip.");
-        return null;
-    }
-    return new THREE.AnimationClip('FightStance', duration, tracks);
+    // console.log("----------------------------------"); // Quieten log
+    if (tracks.length === 0) { console.warn(`No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, duration, tracks);
 }
 
+// Keep createResetPoseClip function
 function createResetPoseClip(skeleton: THREE.Skeleton | null, initialPose: Record<string, any>, duration: number = 0.3): THREE.AnimationClip | null {
     if (!skeleton || Object.keys(initialPose).length === 0) return null;
     const tracks: THREE.KeyframeTrack[] = [];
     const times = [0, duration];
-
     skeleton.bones.forEach((bone: THREE.Bone) => {
         const initial = initialPose[bone.name];
         if (!initial) return;
         const currentQuat = bone.quaternion;
         tracks.push(new THREE.QuaternionKeyframeTrack(`${bone.name}.quaternion`, times, [currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w, initial.quat.x, initial.quat.y, initial.quat.z, initial.quat.w]));
     });
-
     if (tracks.length === 0) return null;
     return new THREE.AnimationClip('ResetPose', duration, tracks);
+}
+
+// --- NEW: Create Idle Breathing Clip Function ---
+function createIdleBreathClip(
+    skeleton: THREE.Skeleton | null, 
+    stancePoseTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>, 
+    initialPose: Record<string, InitialPoseData>, // Needed for fallback
+    clipName: string = 'IdleBreath', 
+    duration: number = 3.5, // Duration for one breath cycle
+    intensity: number = 0.8 // Degrees of subtle movement - INCREASED from 0.4
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(stancePoseTargets).length === 0 || Object.keys(initialPose).length === 0) {
+        console.warn("[IdleBreath] Missing skeleton, stance targets, or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration / 2, duration]; // Start, Peak, End (back to start)
+    const deg = THREE.MathUtils.degToRad;
+
+    // Bones to animate for breathing (Using names from your provided list)
+    const breathingBones = ['Spine01', 'Spine02', 'Head', 'L_Clavicle', 'R_Clavicle', 'L_Upperarm', 'R_Upperarm']; 
+    // console.log(`[IdleBreath] Creating clip with duration ${duration}s, intensity ${intensity}deg`);
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const stanceInfo = stancePoseTargets[boneName];
+        const initial = initialPose[boneName];
+        
+        // Determine the base quaternion (must be the final stance pose)
+        let baseQuat = new THREE.Quaternion();
+        if (stanceInfo?.rotation && initial) {
+            const eulerOrder = stanceInfo.eulerOrder;
+            const r = stanceInfo.rotation;
+            // We need the Euler angles in radians directly from the target definition
+            const stanceEulerRad = new THREE.Euler(deg(r.x), deg(r.y), deg(r.z), eulerOrder);
+            baseQuat.setFromEuler(stanceEulerRad);
+        } else if (initial) {
+            // If no specific stance defined for this bone, use its initial pose
+            baseQuat.copy(initial.quat); 
+        } else {
+            // console.warn(`[IdleBreath] No initial or stance pose for bone: ${boneName}`);
+            return; // Skip if no base pose info
+        }
+
+        // If this is a breathing bone, calculate peak rotation
+        if (breathingBones.includes(boneName)) {
+            const peakQuat = baseQuat.clone();
+            const deltaEuler = new THREE.Euler();
+            const deltaIntensityRad = deg(intensity);
+
+            // Apply subtle rotations for "inhale" peak relative to stance pose
+             if (boneName.includes('Spine')) {
+                 deltaEuler.x = -deltaIntensityRad; // Slight pitch back
+             } else if (boneName.includes('Clavicle')) {
+                 deltaEuler.y = boneName.startsWith('L_') ? deltaIntensityRad * 0.5 : -deltaIntensityRad * 0.5; // Slight shrug/rotate up
+             } else if (boneName.includes('Head')) {
+                  deltaEuler.x = -deltaIntensityRad * 0.5; // Slight nod down during inhale?
+             } else if (boneName.includes('Upperarm')) {
+                 // Very subtle outward rotation
+                 deltaEuler.z = boneName.startsWith('L_') ? -deltaIntensityRad * 0.3 : deltaIntensityRad * 0.3; 
+             }
+            
+            // Create delta quaternion and apply it to the base (stance) quaternion
+            const deltaQuat = new THREE.Quaternion().setFromEuler(deltaEuler);
+            // Multiply base by delta to get the peak rotation
+            peakQuat.multiplyQuaternions(baseQuat, deltaQuat);
+
+            // Create track: Start(Stance) -> Peak(Stance+Delta) -> End(Stance)
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                `${boneName}.quaternion`, 
+                times, 
+                [
+                    baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w, 
+                    peakQuat.x, peakQuat.y, peakQuat.z, peakQuat.w, 
+                    baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w
+                ]
+            ));
+            // console.log(`[IdleBreath] Added breathing track for ${boneName}`);
+        } else {
+             // For non-breathing bones, keep them static at the stance pose
+             // A track ensures they stay put during the breathing animation
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                 `${boneName}.quaternion`, 
+                 [0], // Single keyframe is enough to hold pose
+                 [baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w]
+             ));
+        }
+    });
+
+    if (tracks.length === 0) { console.warn(`[IdleBreath] No tracks generated for ${clipName}.`); return null; }
+     // console.log(`[IdleBreath] Created clip ${clipName} with ${tracks.length} tracks.`);
+    return new THREE.AnimationClip(clipName, duration, tracks);
+}
+
+// --- CharacterViewer Component ---
+interface CharacterViewerProps { 
+    modelUrl: string;
 }
 
 export default function CharacterViewer({ modelUrl }: CharacterViewerProps) {
@@ -201,188 +283,191 @@ export default function CharacterViewer({ modelUrl }: CharacterViewerProps) {
     const [mixer, setMixer] = useState<THREE.AnimationMixer | null>(null);
     const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({});
     const [skeleton, setSkeleton] = useState<THREE.Skeleton | null>(null);
-
-    // Restore state for animation actions and playback
-    const [fightStanceAction, setFightStanceAction] = useState<THREE.AnimationAction | null>(null);
     const [resetPoseAction, setResetPoseAction] = useState<THREE.AnimationAction | null>(null);
-    const [isPlaying, setIsPlaying] = useState(false);
+    const [fightStanceAction, setFightStanceAction] = useState<THREE.AnimationAction | null>(null);
+    const [idleBreathAction, setIdleBreathAction] = useState<THREE.AnimationAction | null>(null); // <-- New State
+    const [isPlaying, setIsPlaying] = useState(false); // True if stance OR breathing is active
 
-    // Log state changes for verification
-    useEffect(() => {
-        console.log("[Viewer] Mixer updated:", !!mixer);
-    }, [mixer]);
+    // --- Define Static Fight Stance Targets (Memoized) ---
+     const fightStanceTargets = useMemo(() => ({
+         // KEEPING THE VALUES FROM YOUR ROLLED-BACK CODE
+         // Arms (Order: XYZ)
+         'L_Upperarm': { rotation: { x: -6, y: -44, z: -76 }, eulerOrder: 'XYZ' as EulerOrder },
+         'L_Forearm':  { rotation: { x: 102, y: -22, z: -34 }, eulerOrder: 'XYZ' as EulerOrder },
+         'R_Upperarm': { rotation: { x: -51, y: 32, z: 107 }, eulerOrder: 'XYZ' as EulerOrder },
+         'R_Forearm':  { rotation: { x: 51, y: 13, z: 72 }, eulerOrder: 'XYZ' as EulerOrder },
+         // Legs (Order: YXZ)
+         'L_Thigh':    { rotation: { x: 2, y: 180, z: -173 }, eulerOrder: 'YXZ' as EulerOrder },
+         'L_Calf':     { rotation: { x: -6, y: 11, z: -9 }, eulerOrder: 'YXZ' as EulerOrder },
+         'R_Thigh':    { rotation: { x: 30, y: 166, z: 167 }, eulerOrder: 'YXZ' as EulerOrder },
+         'R_Calf':     { rotation: { x: 5, y: -21, z: -2 }, eulerOrder: 'YXZ' as EulerOrder },
+     }), []);
+     // -----------------------------------------------------------
 
-    useEffect(() => {
-        console.log("[Viewer] Skeleton updated:", !!skeleton);
-    }, [skeleton]);
+    // --- Log state changes (Keep) ---
+    useEffect(() => { console.log("[Viewer] Mixer updated:", !!mixer); }, [mixer]);
+    useEffect(() => { console.log("[Viewer] Skeleton updated:", !!skeleton); }, [skeleton]);
+    useEffect(() => { console.log("[Viewer] Initial Pose updated:", Object.keys(initialPose).length, "bones"); }, [initialPose]);
 
+    // --- Create Animation Actions & Setup Listener --- 
     useEffect(() => {
-        console.log("[Viewer] Initial Pose updated:", Object.keys(initialPose).length, "bones");
-    }, [initialPose]);
-
-    // Restore Effect to create actions
-    useEffect(() => {
-        // Ensure all dependencies are met
         if (mixer && skeleton && Object.keys(initialPose).length > 0) {
-            console.log("[Viewer] Creating animation actions...");
-            // --- DEFINE BONE TARGETS HERE ---
-            // Adjust bone names based on console logs!
-            const fightStanceTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }> = {
-                // ISOLATION TEST 5: Left Leg Stance (XYZ Order, Z-axis rotation)
-                'L_Thigh': { rotation: { z: -30 }, eulerOrder: 'XYZ' }, 
-                'L_Calf': { rotation: { z: 45 }, eulerOrder: 'XYZ' },  
-                /*
-                'L_Upperarm': { rotation: { y: -30 }, eulerOrder: 'XYZ' }, 
-                'L_Forearm': { rotation: { z: -90 }, eulerOrder: 'XYZ' }, 
-                'R_Upperarm': { rotation: { y: -30 }, eulerOrder: 'XYZ' },
-                'R_Forearm': { rotation: { z: 90 }, eulerOrder: 'XYZ' }, 
+            // Keep track of actions created in this effect run for listener closure
+            let localStanceAction: THREE.AnimationAction | null = null;
+            let localResetAction: THREE.AnimationAction | null = null;
+            let localIdleAction: THREE.AnimationAction | null = null;
 
-                // Legs: Keep previous settings (YXZ order)
-                // 'L_Thigh': { rotation: { x: -30, y: -10 }, eulerOrder: 'YXZ' },
-                // 'L_Calf': { rotation: { x: 45 }, eulerOrder: 'YXZ' },  
-                'R_Thigh': { rotation: { x: 20 }, eulerOrder: 'YXZ' },  
-                'R_Calf': { rotation: { x: 30 }, eulerOrder: 'YXZ' },  
-                */
+            // Create Fight Stance Action
+            const stanceClip = createFightStanceClip(skeleton, initialPose, fightStanceTargets, 'FightStance');
+            if (stanceClip) {
+                localStanceAction = mixer.clipAction(stanceClip);
+                localStanceAction.setLoop(THREE.LoopOnce, 1);
+                localStanceAction.clampWhenFinished = true;
+                setFightStanceAction(localStanceAction); // Update state
+                console.log("[Viewer] Fight Stance Action created.");
+            } else { console.error("[Viewer] Failed to create Fight Stance Clip/Action."); }
+
+            // Create Reset Action
+            const resetClip = createResetPoseClip(skeleton, initialPose);
+            if (resetClip) {
+                localResetAction = mixer.clipAction(resetClip);
+                localResetAction.setLoop(THREE.LoopOnce, 1);
+                localResetAction.clampWhenFinished = true;
+                setResetPoseAction(localResetAction); // Update state
+                console.log("[Viewer] Reset Pose Action created.");
+            } else { console.error("[Viewer] Failed to create Reset Pose Clip/Action."); }
+            
+            // Create Idle Breath Action
+            const breathClip = createIdleBreathClip(skeleton, fightStanceTargets, initialPose);
+            if (breathClip) {
+                localIdleAction = mixer.clipAction(breathClip);
+                localIdleAction.setLoop(THREE.LoopRepeat, Infinity);
+                setIdleBreathAction(localIdleAction); // Update state
+                 console.log("[Viewer] Idle Breath Action created.");
+            } else { console.error("[Viewer] Failed to create Idle Breath Clip/Action."); }
+
+            // Single listener for all actions
+            const onAnimationFinished = (event: AnimationFinishedEvent) => {
+                // Check which action finished
+                if (localStanceAction && event.action === localStanceAction) {
+                    console.log("[Viewer] Fight Stance Finished. Starting Idle Breath.");
+                     if (localIdleAction) {
+                         localIdleAction.reset().fadeIn(0.3).play(); // Fade in breathing
+                         // Keep isPlaying = true
+                     }
+                } else if (localResetAction && event.action === localResetAction) {
+                    console.log("[Viewer] Reset Pose Finished.");
+                    setIsPlaying(false); // Now set to false
+                    setAutoRotate(true); // Re-enable auto-rotate after reset
+                }
             };
 
-            const stanceClip = createFightStanceClip(skeleton, initialPose, fightStanceTargets);
-            if (stanceClip) {
-                const action = mixer.clipAction(stanceClip);
-                action.setLoop(THREE.LoopOnce); action.clampWhenFinished = true;
-                setFightStanceAction(action);
-                 console.log("[Viewer] Fight Stance Action created.");
-            } else {
-                 console.error("[Viewer] Failed to create Fight Stance Clip/Action.");
+            mixer.addEventListener('finished', onAnimationFinished);
+            console.log("[Viewer] Added 'finished' listener.");
+
+            // Cleanup function
+            return () => {
+                 console.log("[Viewer] Cleaning up actions and listener.");
+                if (mixer) {
+                     mixer.removeEventListener('finished', onAnimationFinished);
+                     // Stop actions associated with *this specific effect run* 
+                     localStanceAction?.stop();
+                     localResetAction?.stop();
+                     localIdleAction?.stop();
+                }
+                 // Clear state on cleanup as well
                  setFightStanceAction(null);
-            }
-
-             const resetClip = createResetPoseClip(skeleton, initialPose);
-             if (resetClip) {
-                 const action = mixer.clipAction(resetClip);
-                 action.setLoop(THREE.LoopOnce); action.clampWhenFinished = true;
-                 setResetPoseAction(action);
-                 console.log("[Viewer] Reset Pose Action created.");
-             } else {
-                 console.error("[Viewer] Failed to create Reset Pose Clip/Action.");
                  setResetPoseAction(null);
-             }
-        } else {
-            // Clear actions if dependencies are missing
-             if (fightStanceAction) fightStanceAction.stop();
-             if (resetPoseAction) resetPoseAction.stop();
-            setFightStanceAction(null);
-            setResetPoseAction(null);
+                 setIdleBreathAction(null);
+            };
         }
+    }, [mixer, skeleton, initialPose, fightStanceTargets]); // Rerun when these change
 
-        // Cleanup actions on unmount/dependency change
-        return () => {
-             if (fightStanceAction) fightStanceAction.stop();
-             if (resetPoseAction) resetPoseAction.stop();
-             setFightStanceAction(null);
-             setResetPoseAction(null);
-        };
-
-    }, [mixer, skeleton, initialPose]); // Dependencies for creating actions
-
-    // Restore Animation sequence handler
+    // --- Play Fight Stance Sequence Handler --- 
     const playFightStanceSequence = useCallback(() => {
-        if (!fightStanceAction || !resetPoseAction || !mixer || isPlaying) {
-             console.warn("Cannot play sequence. Missing actions/mixer or already playing.");
-             return;
+        // Use state variables directly here
+        if (!fightStanceAction || !mixer) {
+             console.warn("Cannot play stance sequence: Action or Mixer missing.");
+            return;
         }
-
+        console.log("[Viewer] Triggering Fight Stance...");
         setIsPlaying(true);
         setAutoRotate(false);
-        mixer.stopAllAction();
+        
+        // Stop other actions cleanly using fades
+        resetPoseAction?.fadeOut(0.2);
+        idleBreathAction?.fadeOut(0.2); 
+        
+        // Play stance with fade in
+        fightStanceAction.reset().fadeIn(0.2).play();
 
-        // Define listener with specific event type
-        const onStanceFinished = (event: AnimationFinishedEvent) => {
-            // Check if the finished action is the correct one
-            if (event.action === fightStanceAction) {
-                console.log("[Viewer] Stance finished. Waiting...");
-                mixer.removeEventListener('finished', onStanceFinished);
-                setTimeout(() => {
-                    console.log("[Viewer] Playing reset pose...");
-                    resetPoseAction.reset().play();
-                    // Explicitly cast listener to bypass type check
-                    mixer.addEventListener('finished', onResetFinished as any);
-                }, 1500); // Hold stance for 1.5 seconds
-            }
-        };
+    }, [fightStanceAction, resetPoseAction, idleBreathAction, mixer, setAutoRotate]); // Dependencies
 
-        // Define listener with specific event type
-        const onResetFinished = (event: AnimationFinishedEvent) => {
-            // Check if the finished action is the correct one
-            if (event.action === resetPoseAction) {
-                console.log("[Viewer] Reset finished.");
-                mixer.removeEventListener('finished', onResetFinished);
-                setIsPlaying(false);
-                // setAutoRotate(true);
-            }
-        };
+    // --- Reset Pose Handler --- 
+    const triggerResetPose = useCallback(() => {
+         // Use state variables directly here
+        if (!resetPoseAction || !mixer) {
+             console.warn("Cannot play reset sequence: Action or Mixer missing.");
+            return;
+        }
+        console.log("[Viewer] Triggering Reset Pose...");
+        setIsPlaying(false); // Indicate we are returning to idle
+        setAutoRotate(false); // Keep off until reset finishes via the listener
 
-        console.log("[Viewer] Playing fight stance...");
-        fightStanceAction.reset().play();
-        // Explicitly cast listener to bypass type check
-        mixer.addEventListener('finished', onStanceFinished as any);
+        // Stop other actions cleanly using fades
+        fightStanceAction?.fadeOut(0.2);
+        idleBreathAction?.fadeOut(0.2); 
 
-    }, [fightStanceAction, resetPoseAction, mixer, setAutoRotate, isPlaying]);
+        // Play reset with fade in
+        resetPoseAction.reset().fadeIn(0.2).play();
+
+    }, [resetPoseAction, fightStanceAction, idleBreathAction, mixer, setAutoRotate]); // Dependencies
 
     return (
-        <div className="relative w-full h-screen bg-gradient-to-br from-arcade-dark-gray to-arcade-bg">
-            {/* Restore Button Overlay */}
-            <div className="absolute top-24 left-4 z-10">
-                <button
-                    onClick={playFightStanceSequence}
-                    disabled={!fightStanceAction || !resetPoseAction || isPlaying}
-                    className={`btn-arcade ${(!fightStanceAction || !resetPoseAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-action"}`}
-                >
-                    {isPlaying ? "Animating..." : (skeleton ? "Fight Stance" : "Loading...")}
-                </button>
-            </div>
-
-            <Canvas
-                camera={{ position: [0, 0.5, 1.8], fov: 60 }}
-                shadows
-            >
-                {/* Basic lighting */}
-                <ambientLight intensity={0.7} />
-                <directionalLight
-                    position={[5, 10, 5]}
-                    intensity={1.0}
-                    castShadow
-                    shadow-mapSize-width={1024}
-                    shadow-mapSize-height={1024}
-                />
-                <hemisphereLight intensity={0.4} groundColor="#555" />
-
-                <Suspense fallback={
-                    <Html center>
-                         <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p>
-                    </Html>
-                }>
-                    {/* Pass ALL setters down to Model */}
-                    <Model 
-                        url={modelUrl} 
-                        setAutoRotate={setAutoRotate} 
-                        setMixer={setMixer} 
-                        setInitialPose={setInitialPose} 
-                        setSkeleton={setSkeleton} 
+        <>
+            <div className="relative w-full h-screen bg-gradient-to-br from-arcade-dark-gray to-arcade-bg">
+                {/* Button Layout - Adjust disabled logic */} 
+                 <div className="absolute top-24 left-4 z-10 flex flex-col gap-2"> 
+                     <button
+                        onClick={playFightStanceSequence}
+                        // Disable if actions aren't ready OR if currently playing stance/breathing
+                        disabled={!fightStanceAction || !resetPoseAction || !idleBreathAction || isPlaying}
+                        className={`btn-arcade ${(!fightStanceAction || !resetPoseAction || !idleBreathAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-action"}`}
+                    >
+                        {/* Text can be simple or change based on isPlaying */}
+                         Fight Stance
+                    </button>
+                    <button
+                        onClick={triggerResetPose}
+                        // Disable only if reset action isn't ready
+                        disabled={!resetPoseAction}
+                        className={`btn-arcade ${!resetPoseAction ? "btn-arcade-disabled" : "btn-arcade-primary"}`}
+                    >
+                        Reset Pose
+                    </button>
+                </div>
+                {/* Canvas setup remains the same */}
+                <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >
+                     <ambientLight intensity={0.7} />
+                     <directionalLight 
+                        position={[5, 10, 5]} 
+                        intensity={1.0} 
+                        castShadow 
+                        shadow-mapSize-width={1024} 
+                        shadow-mapSize-height={1024} 
                     />
-                    {/* Add the AnimationRunner inside Canvas */}
-                    <AnimationRunner mixer={mixer} />
-                </Suspense>
-
-                <OrbitControls
-                    enablePan={true}
-                    enableZoom={true}
-                    enableRotate={true}
-                    autoRotate={autoRotate}
-                    autoRotateSpeed={1.5}
-                    target={[0, 0.5, 0]}
-                    onChange={() => { if (autoRotate) setAutoRotate(false); }}
-                />
-            </Canvas>
-        </div>
+                    <hemisphereLight intensity={0.4} groundColor="#555" />
+                     <Suspense fallback={
+                        <Html center>
+                             <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p>
+                        </Html>
+                    }>
+                         <Model url={modelUrl} setAutoRotate={setAutoRotate} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
+                         <AnimationRunner mixer={mixer} />
+                     </Suspense>
+                     <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} autoRotate={autoRotate} autoRotateSpeed={1.5} target={[0, 0.5, 0]} onChange={() => { if (autoRotate) setAutoRotate(false); }} />
+                </Canvas>
+            </div>
+        </>
     );
 } 
