@@ -553,3 +553,127 @@ export function createBlockPoseClip(
     // This clip transitions *to* the pose. The action using it might loop or clamp.
     return new THREE.AnimationClip(clipName, duration, tracks);
 } 
+
+// Define and export target rotations for the ducking pose
+export const duckTargets: Record<string, { 
+    rotation?: { x: number; y: number; z: number }, 
+    position?: { x?: number; y?: number; z?: number }, // Add optional position target
+    eulerOrder?: EulerOrder 
+}> = {
+    // --- Torso Rotations (XYZ Order from Leva) ---
+    // Keep Hip position offset ONLY
+    'Hip':        { position: { z: -0.15 } }, // Keep Z position offset for Hip
+    'Pelvis':     { rotation: { x: 5, y: -147, z: 10 }, eulerOrder: 'XYZ' },
+    'Waist':      { rotation: { x: -111, y: -22, z: -147 }, eulerOrder: 'XYZ' },
+    'Spine01':    { rotation: { x: 0, y: -3, z: 0 }, eulerOrder: 'XYZ' },
+    'Spine02':    { rotation: { x: 0, y: 0, z: 0 }, eulerOrder: 'XYZ' },
+    // --- Legs Rotations (XYZ Order from Leva) ---
+    'L_Thigh':    { rotation: { x: -180, y: -87, z: -42 }, eulerOrder: 'XYZ' },
+    'L_Calf':     { rotation: { x: 6, y: 9, z: 103 }, eulerOrder: 'XYZ' },
+    'L_Foot':     { rotation: { x: -104, y: -151, z: 82 }, eulerOrder: 'XYZ' },
+    'R_Thigh':    { rotation: { x: -180, y: -104, z: -42 }, eulerOrder: 'XYZ' },
+    'R_Calf':     { rotation: { x: 6, y: 9, z: 103 }, eulerOrder: 'XYZ' },
+    'R_Foot':     { rotation: { x: -104, y: -151, z: 82 }, eulerOrder: 'XYZ' },
+};
+
+/**
+ * Creates a transition animation to a ducking pose.
+ * Starts from stance, moves body low (position + rotation), holds.
+ */
+export function createDuckPoseClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
+    clipName: string = 'DuckPose', 
+    duration: number = 0.4 // Duration to transition into the pose
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createDuckPoseClip] Missing skeleton or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration]; // Start, End (Hold Duck Pose)
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpVec = new THREE.Vector3(); // For position
+
+    // Use the exported duckTargets constant
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; 
+
+        const stanceInfo = stancePoseTargets[boneName];
+        let startQuat = new THREE.Quaternion(); 
+        let startPos = new THREE.Vector3(); // Get start position
+        let startEulerOrder: EulerOrder = 'XYZ';
+
+        // Determine start pose (Stance if defined, else Initial)
+        startPos.copy(initial.pos); // Base position is always initial
+        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
+            startEulerOrder = stanceInfo.eulerOrder;
+            tmpEuler.set(deg(stanceInfo.rotation.x ?? 0), deg(stanceInfo.rotation.y ?? 0), deg(stanceInfo.rotation.z ?? 0), startEulerOrder);
+            startQuat.setFromEuler(tmpEuler);
+             // Note: Stance targets currently don't define position offsets
+        } else {
+            startQuat.copy(initial.quat);
+             // Guess order for initial if needed
+             if (boneName.includes('Upperarm') || boneName.includes('Forearm') || boneName.includes('Hand')) startEulerOrder = 'XYZ';
+             else if (boneName.includes('Thigh') || boneName.includes('Calf') || boneName.includes('Foot')) startEulerOrder = 'YXZ';
+             else startEulerOrder = 'XYZ'; 
+        }
+
+        let endQuat = new THREE.Quaternion();
+        let endPos = new THREE.Vector3().copy(startPos); // Default endPos is startPos
+        const duckTarget = duckTargets[boneName]; // Use exported constant
+
+        // Determine end pose (Duck Target if defined, else Start Pose)
+        if (duckTarget) {
+            // Apply Rotation Target
+            if (duckTarget.rotation) {
+                const dt = duckTarget.rotation;
+                const order = duckTarget.eulerOrder || startEulerOrder;
+                tmpEuler.set(deg(dt.x), deg(dt.y), deg(dt.z), order);
+                endQuat.setFromEuler(tmpEuler);
+            } else {
+                 endQuat.copy(startQuat); // No rotation target, keep start rotation
+            }
+            // Apply Position Target (relative to startPos for simplicity)
+            if (duckTarget.position) {
+                 tmpVec.set(
+                     duckTarget.position.x ?? 0,
+                     duckTarget.position.y ?? 0, 
+                     duckTarget.position.z ?? 0
+                 );
+                 endPos.add(tmpVec); // Add the offset defined in duckTargets
+            }
+            // else endPos remains startPos
+        } else {
+            endQuat.copy(startQuat); // Keep non-ducking bones at their start rotation
+            // endPos remains startPos
+        }
+
+        // Add Rotation Track
+        const quatKeyframeValues = [
+            startQuat.x, startQuat.y, startQuat.z, startQuat.w,
+            endQuat.x, endQuat.y, endQuat.z, endQuat.w
+        ];
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, quatKeyframeValues));
+        
+        // Add Position Track ONLY if endPos is different from startPos
+        if (!endPos.equals(startPos)) {
+            const posKeyframeValues = [
+                startPos.x, startPos.y, startPos.z,
+                endPos.x, endPos.y, endPos.z
+            ];
+            tracks.push(new THREE.VectorKeyframeTrack(`${boneName}.position`, times, posKeyframeValues));
+        }
+    });
+
+    if (tracks.length === 0) { console.warn(`[createDuckPoseClip] No tracks generated for ${clipName}.`); return null; }
+    // Clip transitions *to* the pose. Action should clamp.
+    return new THREE.AnimationClip(clipName, duration, tracks);
+} 

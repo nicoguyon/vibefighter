@@ -10,8 +10,10 @@ import {
     createWalkCycleClip,
     createRightPunchClip,
     createBlockPoseClip,
+    createDuckPoseClip,
     defaultFightStanceTargets,
-    blockTargets
+    blockTargets,
+    duckTargets
 } from '@/lib/animations/clips';
 
 // Re-import React for Client Component
@@ -75,6 +77,7 @@ export default function CharacterPoseEditor() {
     const [walkCycleAction, setWalkCycleAction] = useState<THREE.AnimationAction | null>(null);
     const [rightPunchAction, setRightPunchAction] = useState<THREE.AnimationAction | null>(null);
     const [blockPoseAction, setBlockPoseAction] = useState<THREE.AnimationAction | null>(null);
+    const [duckPoseAction, setDuckPoseAction] = useState<THREE.AnimationAction | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [levaInitialized, setLevaInitialized] = useState(false);
     
@@ -126,12 +129,12 @@ export default function CharacterPoseEditor() {
     const [levaControls, setLevaControls] = useControls('Fight Stance Pose', () => ({
         Arms: folder({
             ArmEulerOrder: { value: 'XYZ' as EulerOrder, options: ['XYZ', 'YXZ', 'ZYX'] },
-            'L_Upperarm x': { value: 0, min: -180, max: 180, step: 1 },
+            'L_Upperarm x': { value: 0, min: -180, max: 180, step: 1 }, 
             'L_Upperarm y': { value: 0, min: -180, max: 180, step: 1 },
             'L_Upperarm z': { value: 0, min: -180, max: 180, step: 1 },
             'L_Forearm x': { value: 0, min: -180, max: 180, step: 1 },
             'L_Forearm y': { value: 0, min: -180, max: 180, step: 1 },
-            'L_Forearm z': { value: 0, min: -180, max: 180, step: 1 },
+            'L_Forearm z': { value: 0, min: -180, max: 180, step: 1 }, 
             'L_Hand x': { value: 0, min: -180, max: 180, step: 1 },
             'L_Hand y': { value: 0, min: -180, max: 180, step: 1 },
             'L_Hand z': { value: 0, min: -180, max: 180, step: 1 },
@@ -232,7 +235,7 @@ export default function CharacterPoseEditor() {
             const initialHeadNeckOrder = 'XYZ' as EulerOrder;
 
             // Update ALL bones from initial pose
-            updateFromBone('L_Upperarm', 'L_Upperarm', initialArmOrder); 
+            updateFromBone('L_Upperarm', 'L_Upperarm', initialArmOrder);
             updateFromBone('L_Forearm', 'L_Forearm', initialArmOrder);
             updateFromBone('L_Hand', 'L_Hand', initialArmOrder);
             updateFromBone('R_Upperarm', 'R_Upperarm', initialArmOrder);
@@ -281,7 +284,7 @@ export default function CharacterPoseEditor() {
     // --- Create Animation Actions ---
     useEffect(() => {
         if (mixer && skeleton && Object.keys(initialPose).length > 0) {
-             let createdReset = false, createdStance = false, createdIdle = false, createdWalk = false, createdPunch = false, createdBlock = false;
+             let createdReset = false, createdStance = false, createdIdle = false, createdWalk = false, createdPunch = false, createdBlock = false, createdDuck = false;
              
              // Create Reset Action (if not already created)
              if (!resetPoseAction) {
@@ -357,6 +360,19 @@ export default function CharacterPoseEditor() {
                  } else { console.error("[Editor] Failed to create Block Pose Clip/Action."); }
              }
 
+            // Create Duck Pose Action (if not already created)
+             if (!duckPoseAction) {
+                 const duckClip = createDuckPoseClip(skeleton, initialPose, defaultFightStanceTargets);
+                 if (duckClip) {
+                     const action = mixer.clipAction(duckClip);
+                     action.setLoop(THREE.LoopOnce, 1); // Duck transition plays once
+                     action.clampWhenFinished = true; // Hold the duck pose
+                     setDuckPoseAction(action);
+                     createdDuck = true;
+                     console.log("[Editor] Duck Pose Action created.");
+                 } else { console.error("[Editor] Failed to create Duck Pose Clip/Action."); }
+             }
+
         } else {
              // Clear actions if mixer/skeleton/pose become unavailable
              if (resetPoseAction) { resetPoseAction.stop(); setResetPoseAction(null); }
@@ -365,6 +381,7 @@ export default function CharacterPoseEditor() {
              if (walkCycleAction) { walkCycleAction.stop(); setWalkCycleAction(null); }
              if (rightPunchAction) { rightPunchAction.stop(); setRightPunchAction(null); }
              if (blockPoseAction) { blockPoseAction.stop(); setBlockPoseAction(null); }
+             if (duckPoseAction) { duckPoseAction.stop(); setDuckPoseAction(null); }
              setIsPlaying(false); // Reset playing state
         }
 
@@ -377,7 +394,7 @@ export default function CharacterPoseEditor() {
              // idleBreathAction?.stop();
         };
         // Depend on mixer, skeleton, initialPose. Also include action states to recreate if they somehow get nullified.
-    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction]); 
+    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction]); 
     
     // --- Setup Animation Listener --- // Handles transitions after animations finish
     useEffect(() => {
@@ -408,6 +425,9 @@ export default function CharacterPoseEditor() {
                 console.log("[Editor] Block Pose Finished. Holding pose.");
                 // We have clamped at the end, so just allow interaction
                 setIsPlaying(false); // Block transition finished
+            } else if (duckPoseAction && event.action === duckPoseAction) {
+                console.log("[Editor] Duck Pose Finished. Holding pose.");
+                setIsPlaying(false); // Duck transition finished
             }
         };
 
@@ -415,8 +435,8 @@ export default function CharacterPoseEditor() {
         console.log("[Editor] Added 'finished' listener.");
 
         // Ensure listener has access to the latest actions and state setters
-    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, blockPoseAction, setAutoRotate, setIsPlaying]); // Added blockPoseAction
-
+    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, setAutoRotate, setIsPlaying]); // Added duckPoseAction
+    
     // --- Live Update Pose (Keep definition) ---
     useEffect(() => {
         if (!skeleton || Object.keys(initialPose).length === 0 || !levaInitialized || isPlaying) return; // Skip direct updates if animating
@@ -477,7 +497,7 @@ export default function CharacterPoseEditor() {
             } else {
                 // If no controls for this bone, reset to its initial quaternion only if NOT animating
                 if (!isPlaying) {
-                    bone.quaternion.copy(initial.quat);
+                bone.quaternion.copy(initial.quat);
                 }
             }
         });
@@ -497,6 +517,7 @@ export default function CharacterPoseEditor() {
         walkCycleAction?.fadeOut(0.2);
         rightPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.2);
 
         // Play reset with fade in
         resetPoseAction.reset().fadeIn(0.2).play();
@@ -560,7 +581,7 @@ export default function CharacterPoseEditor() {
         // Apply all updates to Leva
         setLevaControls(updates);
 
-    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added blockPoseAction
+    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added duckPoseAction
 
     // --- Fight Stance Handler (Update for fades and state) ---
     const triggerFightStance = useCallback(() => {
@@ -576,6 +597,7 @@ export default function CharacterPoseEditor() {
         walkCycleAction?.fadeOut(0.2); // Stop walk if playing
         rightPunchAction?.fadeOut(0.2); // Stop punch if playing
         blockPoseAction?.fadeOut(0.2); // Stop block if active
+        duckPoseAction?.fadeOut(0.2); // Stop duck if active
         
         // Play stance with fade in
         fightStanceAction.reset().fadeIn(0.2).play();
@@ -620,7 +642,7 @@ export default function CharacterPoseEditor() {
         setLevaControls(updates);
         setLevaInitialized(true); // Ensure Leva knows it's been intentionally set
 
-    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added blockPoseAction
+    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added duckPoseAction
 
     // --- Walk Cycle Handler ---
     const triggerWalkCycle = useCallback(() => {
@@ -635,13 +657,14 @@ export default function CharacterPoseEditor() {
         idleBreathAction?.fadeOut(0.2);
         rightPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.2);
 
         // Play walk cycle with fade in (loops)
         walkCycleAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for walk cycle
 
-    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added blockPoseAction
+    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added duckPoseAction
 
     // --- Right Punch Handler ---
     const triggerRightPunch = useCallback(() => {
@@ -656,13 +679,14 @@ export default function CharacterPoseEditor() {
         idleBreathAction?.fadeOut(0.2);
         walkCycleAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.2);
 
         // Play punch animation with fade in (plays once)
         rightPunchAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for punch
 
-    }, [rightPunchAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, blockPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added blockPoseAction
+    }, [rightPunchAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added duckPoseAction
 
     // --- Block Pose Handler ---
     const triggerBlockPose = useCallback(() => {
@@ -677,6 +701,7 @@ export default function CharacterPoseEditor() {
         idleBreathAction?.fadeOut(0.2);
         walkCycleAction?.fadeOut(0.2);
         rightPunchAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.2);
 
         // Play block animation with fade in (plays once, clamps)
         blockPoseAction.reset().fadeIn(0.2).play();
@@ -721,7 +746,56 @@ export default function CharacterPoseEditor() {
              console.warn("[Editor] Imported blockTargets constant is missing?"); // Should not happen
         }
 
-    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, mixer, setAutoRotate, setIsPlaying, setLevaControls]); // Dependencies remain similar
+    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying, setLevaControls]); // Dependencies remain similar
+
+    // --- Duck Pose Handler ---
+    const triggerDuckPose = useCallback(() => {
+        if (!duckPoseAction || !mixer) return;
+        console.log("[Editor] Triggering Duck Pose...");
+        setIsPlaying(true); // Duck transition IS a blocking action
+        setAutoRotate(false);
+
+        // Stop other actions cleanly using fades
+        resetPoseAction?.fadeOut(0.2);
+        fightStanceAction?.fadeOut(0.2);
+        idleBreathAction?.fadeOut(0.2);
+        walkCycleAction?.fadeOut(0.2);
+        rightPunchAction?.fadeOut(0.2);
+        blockPoseAction?.fadeOut(0.2);
+
+        // Play duck animation with fade in (plays once, clamps)
+        duckPoseAction.reset().fadeIn(0.2).play();
+
+        // Update Leva controls to match duck pose
+        const duckTargetsForLeva = duckTargets as Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>;
+        if (duckTargetsForLeva) {
+             const updates: Record<string, number | string> = {}; 
+             Object.entries(duckTargetsForLeva).forEach(([boneName, targetInfo]) => {
+                 if (targetInfo.rotation) {
+                     const controlPrefix = boneName;
+                     updates[`${controlPrefix} x`] = targetInfo.rotation.x ?? 0;
+                     updates[`${controlPrefix} y`] = targetInfo.rotation.y ?? 0;
+                     updates[`${controlPrefix} z`] = targetInfo.rotation.z ?? 0;
+                     
+                     // Update relevant Euler order selector
+                     let groupEulerControlName = '';
+                     // Check groups that ARE included in duckTargets
+                     if ([/* Legs */ 'L_Thigh', 'L_Calf', 'L_Foot', 'R_Thigh', 'R_Calf', 'R_Foot'].includes(boneName)) groupEulerControlName = 'LegEulerOrder'; 
+                     else if ([/* Torso */ 'Pelvis', 'Waist', 'Spine01', 'Spine02'].includes(boneName)) groupEulerControlName = 'TorsoEulerOrder'; 
+                     else if ([/* Head/Neck */ 'Head'].includes(boneName)) groupEulerControlName = 'HeadNeckEulerOrder';
+                     
+                     if (groupEulerControlName && targetInfo.eulerOrder) {
+                         updates[groupEulerControlName] = targetInfo.eulerOrder;
+                     }
+                 }
+             });
+             setLevaControls(updates);
+             console.log("[Editor] Updated Leva controls for Duck Pose.");
+        } else {
+             console.warn("[Editor] Imported duckTargets constant is missing?");
+        }
+
+    }, [duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, setIsPlaying, setLevaControls]);
 
     // --- Conditional Rendering based on Status ---
     if (status === 'loading') {
@@ -771,6 +845,10 @@ export default function CharacterPoseEditor() {
                     {/* Add Block Button */}
                     <button onClick={triggerBlockPose} disabled={!blockPoseAction} className={`btn-arcade ${(!blockPoseAction) ? "btn-arcade-disabled" : "btn-arcade-defense"}`}>
                         Block
+                    </button>
+                    {/* Add Duck Button */}
+                    <button onClick={triggerDuckPose} disabled={!duckPoseAction} className={`btn-arcade ${(!duckPoseAction) ? "btn-arcade-disabled" : "btn-arcade-movement"}`}>
+                        Duck
                     </button>
                 </div>
                 <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >
@@ -860,5 +938,5 @@ function createResetPoseClip(skeleton: THREE.Skeleton | null, initialPose: Recor
     });
     if (tracks.length === 0) return null;
     return new THREE.AnimationClip('ResetPose', duration, tracks);
-}
+} 
 */ 

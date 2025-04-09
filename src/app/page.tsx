@@ -31,7 +31,7 @@ export default function Home() {
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
        <div className="text-center cursor-pointer group" onClick={goToSelect}>
          <Image
-           src="/vibefighter-logo.svg"
+           src="/images/vibefighter-logo.svg"
            alt="VibeFighter Logo"
            width={600}
            height={300}
