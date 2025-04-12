@@ -143,8 +143,8 @@ export function createIdleBreathClip(
     stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
     initialPose: Record<string, InitialPoseData>, 
     clipName: string = 'IdleBreath', 
-    duration: number = 3.5, 
-    intensity: number = 0.8 
+    duration: number = 2.5, 
+    intensity: number = 1.7 
 ): THREE.AnimationClip | null {
     if (!skeleton || Object.keys(stancePoseTargets).length === 0 || Object.keys(initialPose).length === 0) {
         console.warn("[createIdleBreathClip] Missing skeleton, stance targets, or initial pose.");

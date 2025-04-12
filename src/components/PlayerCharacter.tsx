@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, memo, useMemo } from 'react';
+import React, { useEffect, useState, useRef, memo, useMemo, forwardRef, useCallback, useImperativeHandle } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
 import { useGLTF, useAnimations } from '@react-three/drei';
@@ -17,9 +17,14 @@ import {
     // type EulerOrder // Not directly needed here
 } from '../lib/animations/clips';
 
+import { PlayerCharacterHandle } from '@/components/BattleScene'; // Import the handle type
+
 // --- Types ---
 interface PlayerCharacterProps { 
     modelUrl: string;
+    initialPosition: [number, number, number];
+    initialFacing: 'left' | 'right';
+    isPlayerControlled: boolean;
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -37,16 +42,43 @@ const GROUND_LEVEL = 0;
 // const playerPhysicsProps: BoxProps & BodyProps = { ... }; // Can be commented out if not used
 
 // Keep initialPosition definition if needed for visual placement
-const initialPosition: [number, number, number] = [-2, 2, 0]; 
+// const initialPosition: [number, number, number] = [-2, 2, 0]; 
 
-export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
+// --- Component Definition with forwardRef ---
+// Update the forwardRef signature to use the handle type
+export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>(({ 
+    modelUrl, 
+    initialPosition,
+    initialFacing, 
+    isPlayerControlled 
+}, ref) => {
     // --- Refs ---
-    // Comment out useBox
-    // const [physicsMeshRef, api] = useBox<THREE.Mesh>(() => playerPhysicsProps);
-    const visualGroupRef = useRef<THREE.Group>(null); 
+    const groupRef = useRef<THREE.Group>(null); // Internal ref for useAnimations & potentially other uses
+    const modelWrapperRef = useRef<THREE.Group>(null); // Ref for inner group that holds the model primitive
+
+    // Callback ref to assign to the main group ref
+    const mainGroupRefCallback = useCallback((node: THREE.Group | null) => {
+        // Assign to internal ref
+        groupRef.current = node;
+        // Assign to forwarded ref (if needed externally, though handle might be preferred now)
+        /*
+        if (typeof ref === 'function') {
+            ref(node);
+        } else if (ref) {
+            ref.current = node;
+        }
+        */
+    }, []); // Removed ref dependency as we use imperative handle
+
+    // Expose methods to get the main group and the model wrapper
+    useImperativeHandle(ref, () => ({ // Use forwarded ref here
+        getMainGroup: () => groupRef.current,
+        getModelWrapper: () => modelWrapperRef.current
+    }), []); // Empty dependency array ensures the handle doesn't change unnecessarily
+
     // Ref for manual velocity
     const manualVelocityRef = useRef({ x: 0, y: 0, z: 0 });
-    // Keep position state in ref for useFrame mutation
+    // Use initialPosition prop for the position ref
     const positionRef = useRef(new THREE.Vector3(...initialPosition));
     const skeletonRef = useRef<THREE.Skeleton | null>(null); // Ref for skeleton
     const isMovingHorizontally = useRef(false); // Ref to track horizontal movement state
@@ -64,6 +96,20 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
     // Re-add isLoaded for GLTF
     const [isLoaded, setIsLoaded] = useState(false);
     const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({}); // State for initial pose
+
+    // --- Apply Initial Facing Rotation --- 
+    useEffect(() => {
+        // Reverted: Needs isLoaded check
+        if (isLoaded && modelWrapperRef.current) {
+            // Reverted: Use 0 and Math.PI
+            const targetRotation = initialFacing === 'right' 
+                ? 0         // Face right (+X)
+                : Math.PI;  // Face left (-X)
+            console.log(`Setting initial facing for ${isPlayerControlled ? 'P1' : 'P2'}: ${initialFacing}, Target Rot: ${targetRotation.toFixed(2)}`);
+            modelWrapperRef.current.rotation.y = targetRotation;
+            console.log(`--> Rotation set to: ${modelWrapperRef.current.rotation.y.toFixed(2)}`);
+        }
+    }, [initialFacing, isPlayerControlled, isLoaded]); // Reverted: isLoaded dependency needed
 
     // --- Load Model ---
     const { scene, animations: existingAnimations } = useGLTF(modelUrl);
@@ -113,7 +159,11 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
         }
     }, [scene, isLoaded])
 
+    // --- Input Handling (Conditional) ---
     useEffect(() => {
+        // Only attach listeners if this character is player-controlled
+        if (!isPlayerControlled) return;
+
         const handleKeyDown = (event: KeyboardEvent) => {
              // Use key codes or event.key
              switch (event.key) {
@@ -145,7 +195,7 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
         };
-    }, []);
+    }, [isPlayerControlled]); // Dependency array includes the control flag
 
     // --- Create Walk Animation Clip --- 
     const walkCycleClip = useMemo(() => {
@@ -195,7 +245,7 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
         return clips;
     }, [walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip, duckPoseClip]);
 
-    const { actions, mixer } = useAnimations(animationsToUse, visualGroupRef); // Get mixer too
+    const { actions, mixer } = useAnimations(animationsToUse, groupRef); // Use internal groupRef here
 
     // --- Configure Animation Actions --- 
     useEffect(() => {
@@ -208,10 +258,26 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
             actions.GoToFightStance.setLoop(THREE.LoopOnce, 1);
             actions.GoToFightStance.clampWhenFinished = true;
             stanceSet = true;
+            // --- Trigger Initial Stance Here (Keep Disabled) ---
+            /*
+            if (!hasHitGround.current) { // Prevent triggering again if component re-renders
+                console.log("Initial setup: triggering fight stance.");
+                actions.GoToFightStance.reset().fadeIn(0.2).play();
+                hasHitGround.current = true; // Use this flag to mark initial stance trigger
+            }
+            */
         }
         if (actions?.IdleBreath) {
             actions.IdleBreath.setLoop(THREE.LoopRepeat, Infinity);
             idleSet = true;
+            // --- Play Idle Directly if Stance Disabled ---
+            // If stance animation is not being played initially, play idle directly
+            if (!stanceSet || !hasHitGround.current) { // Check if stance didn't run
+                 console.log("Initial setup: triggering IdleBreath directly.");
+                 actions.IdleBreath.reset().fadeIn(0.2).play();
+                 isInStance.current = true; // Mark as in idle state
+                 hasHitGround.current = true; // Prevent re-triggering
+            }
         }
         if (actions?.RightPunch) {
             actions.RightPunch.setLoop(THREE.LoopOnce, 1);
@@ -231,11 +297,14 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
     useEffect(() => {
         if (!mixer) return;
         const listener = (e: AnimationFinishedEvent) => {
+            // Remove the check for GoToFightStance finishing
+            /*
             if (e.action === actions?.GoToFightStance) {
                  console.log("GoToFightStance finished. Starting IdleBreath.");
                 actions?.IdleBreath?.reset().fadeIn(0.3).play();
                 isInStance.current = true; // Now officially in stance/idle
-            } else if (e.action === actions?.RightPunch) {
+            } else */
+            if (e.action === actions?.RightPunch) { // Only check for punch now
                 console.log("RightPunch finished. Starting IdleBreath.");
                 actions?.IdleBreath?.reset().fadeIn(0.3).play();
                 isActionInProgress.current = false; // Action finished
@@ -302,10 +371,13 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
     // --- Frame Update (Manual Movement & Animation Trigger) --- 
     useFrame((state, delta) => { 
         delta = Math.min(delta, 0.05);
-        if (!visualGroupRef.current || !isLoaded) return;
+        // Use the internal ref for checks within useFrame now, as it's guaranteed to be a RefObject
+        const group = groupRef.current;
+        if (!group || !isLoaded) return;
 
         let targetVelocityX = 0;
-        if (!isActionInProgress.current) { // Check action flag
+        // Only calculate velocity from input if player controlled
+        if (isPlayerControlled && !isActionInProgress.current) { 
              if (pressedKeys.left || pressedKeys.right) {
                 targetVelocityX = pressedKeys.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
             }
@@ -326,32 +398,26 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
         currentPos.y += manualVelocityRef.current.y * delta;
         currentPos.z += manualVelocityRef.current.z * delta; 
 
-        // --- Ground Collision & Initial Stance Trigger ---
+        // --- Ground Collision --- (Simplified: just prevent falling through)
         if (currentPos.y <= GROUND_LEVEL) {
             currentPos.y = GROUND_LEVEL;
             manualVelocityRef.current.y = 0; 
+            // --- REMOVE Initial Stance Trigger From Here ---
+            /*
             if (wasFalling && !hasHitGround.current) {
                  console.log("Hit ground, triggering fight stance.");
                  actions?.GoToFightStance?.reset().fadeIn(0.2).play();
                  hasHitGround.current = true; // Only trigger once
             }
+            */
         }
-        visualGroupRef.current.position.copy(currentPos);
+        // Apply position update to the group using the ref
+        group.position.copy(currentPos);
 
-        // --- Face direction (Modified for backward movement) ---
-        if (visualGroupRef.current) { 
-            if (targetVelocityX > 0) { // Moving right (forward)
-                 visualGroupRef.current.scale.x = 1; // Face right
-            } 
-            // No change needed for targetVelocityX < 0 (moving left/backward)
-            // No change needed for targetVelocityX === 0 (stopped)
-        }
-        
-        // --- Animation Control ---
+        // --- Animation Control (Walk/Idle Trigger - Only for player-controlled) ---
         const isCurrentlyMoving = targetVelocityX !== 0;
         
-        // Only transition walk/idle if no other action is in progress
-        if (!isActionInProgress.current && isCurrentlyMoving !== isMovingHorizontally.current) {
+        if (isPlayerControlled && !isActionInProgress.current && isCurrentlyMoving !== isMovingHorizontally.current) {
             const walkAction = actions?.WalkCycle;
             const idleAction = actions?.IdleBreath;
             
@@ -374,11 +440,13 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
     // --- Render --- 
     if (!isLoaded) { return null; }
     
-    // Return the visual group, position is now controlled by useFrame
+    // Use the main group callback ref for the group
     return (
-        // We use positionRef now, so set initial position directly if needed, but useFrame overrides
-        <group ref={visualGroupRef} name="CharacterModelGroup">
-             <primitive object={scene} />
+        <group ref={mainGroupRefCallback} name="CharacterModelGroup">
+            {/* Inner group to apply facing rotation without animation interference */}
+            <group ref={modelWrapperRef} name="ModelWrapper">
+                 <primitive object={scene} />
+            </group>
              {/* Comment out placeholder box */}
              {/* <mesh castShadow receiveShadow>
                  <boxGeometry args={[0.6, 1.8, 0.5]} /> 
@@ -386,6 +454,6 @@ export const PlayerCharacter = memo(({ modelUrl }: PlayerCharacterProps) => {
              </mesh> */}
         </group>
     );
-});
+}));
 
 PlayerCharacter.displayName = 'PlayerCharacter';
