@@ -21,22 +21,22 @@ function LoadingFallback({ message }: { message: string }) {
     );
 }
 
-// Helper function to fetch and construct model URL from Supabase
-async function getCharacterModelUrl(characterId: string): Promise<string | null> {
-    console.log(`[FightPage] Fetching model URL for: ${characterId}`);
+// Helper function to fetch and construct model URL AND name from Supabase
+async function getCharacterData(characterId: string): Promise<{ name: string; modelUrl: string | null } | null> {
+    console.log(`[FightPage] Fetching data for: ${characterId}`);
     try {
         const { data, error } = await supabase
             .from('characters')
-            .select('model_glb_url')
+            .select('name, model_glb_url') // Select name as well
             .eq('id', characterId)
             .single();
 
         if (error) {
-            console.error(`[FightPage] Supabase error fetching model URL for ${characterId}:`, error);
+            console.error(`[FightPage] Supabase error fetching data for ${characterId}:`, error);
             return null;
         }
-        if (!data?.model_glb_url) {
-            console.error(`[FightPage] No model_glb_url found for ${characterId}.`);
+        if (!data?.model_glb_url || !data?.name) {
+            console.error(`[FightPage] Missing name or model_glb_url for ${characterId}.`);
             return null;
         }
 
@@ -45,11 +45,11 @@ async function getCharacterModelUrl(characterId: string): Promise<string | null>
         if (!finalModelUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
             finalModelUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalModelUrl}`;
         }
-         console.log(`[FightPage] Using model URL: ${finalModelUrl}`);
-        return finalModelUrl;
+         console.log(`[FightPage] Using model URL: ${finalModelUrl} for Name: ${data.name}`);
+        return { name: data.name, modelUrl: finalModelUrl }; // Return object
 
     } catch (err) {
-        console.error(`[FightPage] Unexpected error fetching model URL for ${characterId}:`, err);
+        console.error(`[FightPage] Unexpected error fetching data for ${characterId}:`, err);
         return null;
     }
 }
@@ -60,9 +60,9 @@ export default function FightPage() {
     const charId1 = searchParams.get('char1');
     const charId2 = searchParams.get('char2');
 
-    // State for fetched URLs, loading, and errors
-    const [player1Url, setPlayer1Url] = useState<string | null>(null);
-    const [player2Url, setPlayer2Url] = useState<string | null>(null);
+    // State for fetched URLs, names, loading, and errors
+    const [player1Data, setPlayer1Data] = useState<{ name: string; modelUrl: string | null } | null>(null);
+    const [player2Data, setPlayer2Data] = useState<{ name: string; modelUrl: string | null } | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
@@ -76,25 +76,25 @@ export default function FightPage() {
         // Reset state for potential re-fetches if params change
         setIsLoading(true);
         setError(null);
-        setPlayer1Url(null);
-        setPlayer2Url(null);
+        setPlayer1Data(null); // Reset data objects
+        setPlayer2Data(null);
 
         console.log(`[FightPage] Starting fetch for ${charId1} and ${charId2}`);
-        Promise.all([getCharacterModelUrl(charId1), getCharacterModelUrl(charId2)])
-            .then(([url1, url2]) => {
-                console.log(`[FightPage] Fetched URLs: Player1=${url1}, Player2=${url2}`);
-                if (url1 && url2) {
-                    setPlayer1Url(url1);
-                    setPlayer2Url(url2);
+        Promise.all([getCharacterData(charId1), getCharacterData(charId2)]) // Use updated function
+            .then(([data1, data2]) => {
+                console.log(`[FightPage] Fetched Data: Player1=${JSON.stringify(data1)}, Player2=${JSON.stringify(data2)}`);
+                if (data1?.modelUrl && data2?.modelUrl) {
+                    setPlayer1Data(data1); // Set the whole data object
+                    setPlayer2Data(data2);
                 } else {
-                    let errorMsg = "Failed to fetch model URL(s).";
-                    if (!url1) errorMsg += ` Could not find model for char1: ${charId1}.`;
-                    if (!url2) errorMsg += ` Could not find model for char2: ${charId2}.`;
+                    let errorMsg = "Failed to fetch character data.";
+                    if (!data1?.modelUrl || !data1?.name) errorMsg += ` Could not find model/name for char1: ${charId1}.`;
+                    if (!data2?.modelUrl || !data2?.name) errorMsg += ` Could not find model/name for char2: ${charId2}.`;
                     setError(errorMsg);
                 }
             })
             .catch(err => {
-                console.error("[FightPage] Error fetching character model URLs:", err);
+                console.error("[FightPage] Error fetching character data:", err);
                 setError("An unexpected error occurred while fetching character data.");
             })
             .finally(() => {
@@ -105,7 +105,7 @@ export default function FightPage() {
     // Re-run effect if search parameters change
     }, [charId1, charId2]);
 
-    // --- Render based on state --- 
+    // --- Render based on state ---
     if (isLoading) {
         return <LoadingFallback message="Loading Character Models..." />;
     }
@@ -122,18 +122,23 @@ export default function FightPage() {
         );
     }
 
-    if (!player1Url || !player2Url) {
+    // Check data objects and their modelUrl properties
+    if (!player1Data?.modelUrl || !player2Data?.modelUrl) {
          // This state should ideally be covered by isLoading or error, but as a fallback
         return <LoadingFallback message="Preparing Scene..." />;
     }
 
-    // --- Render the Scene --- 
+    // --- Render the Scene ---
     return (
-        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000' }}> 
-            <BattleScene 
-                player1ModelUrl={player1Url}
-                player2ModelUrl={player2Url}
+        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' /* Needed for absolute positioning of health bars */ }}>
+            {/* Pass names and URLs */}
+            <BattleScene
+                player1ModelUrl={player1Data.modelUrl}
+                player2ModelUrl={player2Data.modelUrl}
+                player1Name={player1Data.name}
+                player2Name={player2Data.name}
             />
+            {/* Health bars will be rendered inside BattleScene's parent div */}
         </div>
     );
 } 

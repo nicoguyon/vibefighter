@@ -11,6 +11,7 @@ import {
     createRightPunchClip,
     createBlockPoseClip,
     createDuckPoseClip,
+    createDuckKickClip,
     defaultFightStanceTargets,
     blockTargets,
     duckTargets
@@ -57,6 +58,9 @@ interface AnimationRunnerProps {
     mixer: THREE.AnimationMixer | null;
 }
 
+// Define possible pose states
+type PoseState = 'initial' | 'stance' | 'blocking' | 'ducking' | 'walking' | 'transitioning' | 'punching' | 'kicking';
+
 // -------- Server Component Implementation --------
 
 // Opt out of caching
@@ -78,7 +82,9 @@ export default function CharacterPoseEditor() {
     const [rightPunchAction, setRightPunchAction] = useState<THREE.AnimationAction | null>(null);
     const [blockPoseAction, setBlockPoseAction] = useState<THREE.AnimationAction | null>(null);
     const [duckPoseAction, setDuckPoseAction] = useState<THREE.AnimationAction | null>(null);
+    const [duckKickAction, setDuckKickAction] = useState<THREE.AnimationAction | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
+    const [currentPoseState, setCurrentPoseState] = useState<PoseState>('initial');
     const [levaInitialized, setLevaInitialized] = useState(false);
     
     // Get characterId from URL params
@@ -284,7 +290,7 @@ export default function CharacterPoseEditor() {
     // --- Create Animation Actions ---
     useEffect(() => {
         if (mixer && skeleton && Object.keys(initialPose).length > 0) {
-             let createdReset = false, createdStance = false, createdIdle = false, createdWalk = false, createdPunch = false, createdBlock = false, createdDuck = false;
+             let createdReset = false, createdStance = false, createdIdle = false, createdWalk = false, createdPunch = false, createdBlock = false, createdDuck = false, createdDuckKick = false;
              
              // Create Reset Action (if not already created)
              if (!resetPoseAction) {
@@ -373,6 +379,19 @@ export default function CharacterPoseEditor() {
                  } else { console.error("[Editor] Failed to create Duck Pose Clip/Action."); }
              }
 
+             // Create Duck Kick Action (if not already created)
+             if (!duckKickAction) {
+                const kickClip = createDuckKickClip(skeleton, initialPose); // Doesn't need stance targets
+                 if (kickClip) {
+                     const action = mixer.clipAction(kickClip);
+                     action.setLoop(THREE.LoopOnce, 1); // Kick plays once
+                     action.clampWhenFinished = true; // Clamp at the end (returns to duck)
+                     setDuckKickAction(action);
+                     createdDuckKick = true;
+                     console.log("[Editor] Duck Kick Action created.");
+                 } else { console.error("[Editor] Failed to create Duck Kick Clip/Action."); }
+             }
+
         } else {
              // Clear actions if mixer/skeleton/pose become unavailable
              if (resetPoseAction) { resetPoseAction.stop(); setResetPoseAction(null); }
@@ -382,7 +401,9 @@ export default function CharacterPoseEditor() {
              if (rightPunchAction) { rightPunchAction.stop(); setRightPunchAction(null); }
              if (blockPoseAction) { blockPoseAction.stop(); setBlockPoseAction(null); }
              if (duckPoseAction) { duckPoseAction.stop(); setDuckPoseAction(null); }
+             if (duckKickAction) { duckKickAction.stop(); setDuckKickAction(null); }
              setIsPlaying(false); // Reset playing state
+             setCurrentPoseState('initial'); // Reset pose state
         }
 
         // Cleanup: Stop actions but don't nullify state here, let the state clearing above handle it
@@ -394,7 +415,7 @@ export default function CharacterPoseEditor() {
              // idleBreathAction?.stop();
         };
         // Depend on mixer, skeleton, initialPose. Also include action states to recreate if they somehow get nullified.
-    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction]); 
+    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction]); 
     
     // --- Setup Animation Listener --- // Handles transitions after animations finish
     useEffect(() => {
@@ -404,38 +425,49 @@ export default function CharacterPoseEditor() {
             // Use the STATE variables here for reliable checks
             if (fightStanceAction && event.action === fightStanceAction) {
                 console.log("[Editor] Fight Stance Finished. Starting Idle Breath.");
+                setCurrentPoseState('stance'); // Now in stance
+                setIsPlaying(false); // Stance transition finished
                 // Check if another action hasn't already started
-                if (idleBreathAction.weight === 0) { // Only transition if idle isn't already fading in/active
+                if (idleBreathAction.weight === 0) { 
                    idleBreathAction.reset().fadeIn(0.3).play();
-                   // Don't set isPlaying here, idle allows interaction
                 } 
             } else if (resetPoseAction && event.action === resetPoseAction) {
                 console.log("[Editor] Reset Pose Finished.");
                 setIsPlaying(false); // Animation sequence complete
+                setCurrentPoseState('initial'); // Back to initial
                 setAutoRotate(true); // Re-enable auto-rotate
             } else if (rightPunchAction && event.action === rightPunchAction) {
                 console.log("[Editor] Right Punch Finished. Starting Idle Breath.");
-                // Check if another action hasn't already started
-                if (idleBreathAction.weight === 0) { // Only transition if idle isn't already fading in/active
-                    idleBreathAction.reset().fadeIn(0.3).play();
-                }
-                // Punch finished, allow leva interaction even if no idle plays
-                setIsPlaying(false); // Punch sequence finished
+                 setCurrentPoseState('stance'); // Assume return to stance after punch for now
+                 setIsPlaying(false); // Punch sequence finished
+                 // Check if another action hasn't already started
+                 if (idleBreathAction.weight === 0) { 
+                     idleBreathAction.reset().fadeIn(0.3).play();
+                 }
             } else if (blockPoseAction && event.action === blockPoseAction) {
                 console.log("[Editor] Block Pose Finished. Holding pose.");
-                // We have clamped at the end, so just allow interaction
+                setCurrentPoseState('blocking'); // Now blocking
                 setIsPlaying(false); // Block transition finished
             } else if (duckPoseAction && event.action === duckPoseAction) {
                 console.log("[Editor] Duck Pose Finished. Holding pose.");
+                setCurrentPoseState('ducking'); // Now ducking
                 setIsPlaying(false); // Duck transition finished
+            } else if (duckKickAction && event.action === duckKickAction) {
+                console.log("[Editor] Duck Kick Finished. Returning to Duck pose (clamped).");
+                setCurrentPoseState('ducking'); // Clamped back to ducking state
+                setIsPlaying(false); // Kick finished
             }
         };
 
         mixer.addEventListener('finished', onAnimationFinished);
         console.log("[Editor] Added 'finished' listener.");
 
+        return () => {
+            mixer.removeEventListener('finished', onAnimationFinished);
+            console.log("[Editor] Removed 'finished' listener.");
+        };
         // Ensure listener has access to the latest actions and state setters
-    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, setAutoRotate, setIsPlaying]); // Added duckPoseAction
+    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- Add duckKickAction and setCurrentPoseState
     
     // --- Live Update Pose (Keep definition) ---
     useEffect(() => {
@@ -509,6 +541,7 @@ export default function CharacterPoseEditor() {
         if (!resetPoseAction || !mixer) return; // Simpler check
         console.log("[Editor] Triggering Reset Pose...");
         setIsPlaying(true); // Reset IS a blocking action
+        setCurrentPoseState('transitioning'); // Mark as transitioning
         setAutoRotate(false); // Keep off until reset finishes via the listener
 
         // Stop other actions cleanly using fades
@@ -518,6 +551,7 @@ export default function CharacterPoseEditor() {
         rightPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
         duckPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2);
 
         // Play reset with fade in
         resetPoseAction.reset().fadeIn(0.2).play();
@@ -581,7 +615,7 @@ export default function CharacterPoseEditor() {
         // Apply all updates to Leva
         setLevaControls(updates);
 
-    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added duckPoseAction
+    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]); // <-- Add setCurrentPoseState
 
     // --- Fight Stance Handler (Update for fades and state) ---
     const triggerFightStance = useCallback(() => {
@@ -589,6 +623,7 @@ export default function CharacterPoseEditor() {
         if (!fightStanceAction || !mixer) return; // Simpler check
         console.log("[Editor] Triggering Fight Stance Sequence...");
         setIsPlaying(true); // Stance transition IS a blocking action
+        setCurrentPoseState('transitioning'); // Mark as transitioning
         setAutoRotate(false);
         
         // Stop other actions cleanly using fades
@@ -598,6 +633,7 @@ export default function CharacterPoseEditor() {
         rightPunchAction?.fadeOut(0.2); // Stop punch if playing
         blockPoseAction?.fadeOut(0.2); // Stop block if active
         duckPoseAction?.fadeOut(0.2); // Stop duck if active
+        duckKickAction?.fadeOut(0.2); // <-- Stop duck kick
         
         // Play stance with fade in
         fightStanceAction.reset().fadeIn(0.2).play();
@@ -642,13 +678,14 @@ export default function CharacterPoseEditor() {
         setLevaControls(updates);
         setLevaInitialized(true); // Ensure Leva knows it's been intentionally set
 
-    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying]); // Added duckPoseAction
+    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]); // <-- Add setCurrentPoseState
 
     // --- Walk Cycle Handler ---
     const triggerWalkCycle = useCallback(() => {
         if (!walkCycleAction || !mixer) return;
         console.log("[Editor] Triggering Walk Cycle...");
-        setIsPlaying(false); // Ensure Leva is enabled during walk
+        setIsPlaying(false); // Walk is NOT blocking Leva
+        setCurrentPoseState('walking'); // Set state to walking
         setAutoRotate(false);
 
         // Stop other actions cleanly using fades
@@ -658,19 +695,21 @@ export default function CharacterPoseEditor() {
         rightPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
         duckPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2); // <-- Stop duck kick
 
         // Play walk cycle with fade in (loops)
         walkCycleAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for walk cycle
 
-    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added duckPoseAction
+    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- Add setCurrentPoseState
 
     // --- Right Punch Handler ---
     const triggerRightPunch = useCallback(() => {
         if (!rightPunchAction || !mixer) return;
         console.log("[Editor] Triggering Right Punch...");
         setIsPlaying(true); // Punch IS a blocking action
+        setCurrentPoseState('punching'); // Set state to punching
         setAutoRotate(false);
 
         // Stop other actions cleanly using fades
@@ -680,19 +719,21 @@ export default function CharacterPoseEditor() {
         walkCycleAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
         duckPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2); // <-- Stop duck kick
 
         // Play punch animation with fade in (plays once)
         rightPunchAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for punch
 
-    }, [rightPunchAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, blockPoseAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying]); // Added duckPoseAction
+    }, [rightPunchAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, blockPoseAction, duckPoseAction, duckKickAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- Add setCurrentPoseState
 
     // --- Block Pose Handler ---
     const triggerBlockPose = useCallback(() => {
         if (!blockPoseAction || !mixer) return;
         console.log("[Editor] Triggering Block Pose...");
         setIsPlaying(true); // Block transition IS a blocking action
+        setCurrentPoseState('transitioning'); // Mark as transitioning (will become 'blocking' on finish)
         setAutoRotate(false);
 
         // Stop other actions cleanly using fades
@@ -702,6 +743,7 @@ export default function CharacterPoseEditor() {
         walkCycleAction?.fadeOut(0.2);
         rightPunchAction?.fadeOut(0.2);
         duckPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2); // <-- Stop duck kick
 
         // Play block animation with fade in (plays once, clamps)
         blockPoseAction.reset().fadeIn(0.2).play();
@@ -746,13 +788,14 @@ export default function CharacterPoseEditor() {
              console.warn("[Editor] Imported blockTargets constant is missing?"); // Should not happen
         }
 
-    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, duckPoseAction, mixer, setAutoRotate, setIsPlaying, setLevaControls]); // Dependencies remain similar
+    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, duckPoseAction, duckKickAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- Add setCurrentPoseState
 
     // --- Duck Pose Handler ---
     const triggerDuckPose = useCallback(() => {
         if (!duckPoseAction || !mixer) return;
         console.log("[Editor] Triggering Duck Pose...");
         setIsPlaying(true); // Duck transition IS a blocking action
+        setCurrentPoseState('transitioning'); // Mark as transitioning (will become 'ducking' on finish)
         setAutoRotate(false);
 
         // Stop other actions cleanly using fades
@@ -762,6 +805,7 @@ export default function CharacterPoseEditor() {
         walkCycleAction?.fadeOut(0.2);
         rightPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2); // <-- Stop duck kick (shouldn't be playing, but good practice)
 
         // Play duck animation with fade in (plays once, clamps)
         duckPoseAction.reset().fadeIn(0.2).play();
@@ -795,7 +839,36 @@ export default function CharacterPoseEditor() {
              console.warn("[Editor] Imported duckTargets constant is missing?");
         }
 
-    }, [duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, setIsPlaying, setLevaControls]);
+    }, [duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckKickAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- Add setCurrentPoseState
+
+    // --- Duck Kick Handler ---
+    const triggerDuckKick = useCallback(() => {
+        // Check if the character is currently in the 'ducking' state
+        if (currentPoseState !== 'ducking' || !duckKickAction || !mixer) { 
+             console.warn("[Editor] Cannot trigger Duck Kick: Not in ducking state or action/mixer missing.");
+             return;
+        } 
+        
+        console.log("[Editor] Triggering Duck Kick...");
+        setIsPlaying(true); // Kick IS a blocking action
+        setCurrentPoseState('kicking'); // Mark state as kicking
+        setAutoRotate(false);
+
+        // Stop other actions (mostly just duck pose hold should be active, but fade out defensively)
+        resetPoseAction?.fadeOut(0.2);
+        fightStanceAction?.fadeOut(0.2);
+        idleBreathAction?.fadeOut(0.2);
+        walkCycleAction?.fadeOut(0.2);
+        rightPunchAction?.fadeOut(0.2);
+        blockPoseAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.1); // Fade out the held duck pose quickly
+
+        // Play kick animation with fade in (plays once, clamps back to duck)
+        duckKickAction.reset().fadeIn(0.2).play();
+
+        // DO NOT update Leva controls for kick
+
+    }, [duckKickAction, duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState, currentPoseState]); // <-- Add currentPoseState and setCurrentPoseState
 
     // --- Conditional Rendering based on Status ---
     if (status === 'loading') {
@@ -846,9 +919,13 @@ export default function CharacterPoseEditor() {
                     <button onClick={triggerBlockPose} disabled={!blockPoseAction} className={`btn-arcade ${(!blockPoseAction) ? "btn-arcade-disabled" : "btn-arcade-defense"}`}>
                         Block
                     </button>
-                    {/* Add Duck Button */}
-                    <button onClick={triggerDuckPose} disabled={!duckPoseAction} className={`btn-arcade ${(!duckPoseAction) ? "btn-arcade-disabled" : "btn-arcade-movement"}`}>
+                    {/* Add Duck Button - Disable if action missing or if currently playing another blocking anim (transitioning/punching/kicking) */}
+                    <button onClick={triggerDuckPose} disabled={!duckPoseAction || isPlaying} className={`btn-arcade ${(!duckPoseAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-movement"}`}>
                         Duck
+                    </button>
+                    {/* Add Duck Kick Button - Enable only if duck kick action exists AND character is currently ducking */} 
+                    <button onClick={triggerDuckKick} disabled={!duckKickAction || currentPoseState !== 'ducking' || isPlaying} className={`btn-arcade ${(!duckKickAction || currentPoseState !== 'ducking' || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-attack"}`}>
+                        Duck Kick
                     </button>
                 </div>
                 <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >

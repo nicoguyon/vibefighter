@@ -50,7 +50,7 @@ export function createFightStanceClip(
         const boneName = bone.name;
         const targetInfo = boneTargets[boneName];
         const initial = initialPose[boneName];
-        if (!initial) { return; } // Skip bone if no initial data
+        if (!initial) return; // Skip bone if no initial data
         
         const startQuat: THREE.Quaternion = initial.quat;
         let endQuat = startQuat.clone();
@@ -554,7 +554,7 @@ export function createBlockPoseClip(
     return new THREE.AnimationClip(clipName, duration, tracks);
 } 
 
-// Define and export target rotations for the ducking pose
+// Define and export target rotations/positions for the ducking pose
 export const duckTargets: Record<string, { 
     rotation?: { x: number; y: number; z: number }, 
     position?: { x?: number; y?: number; z?: number }, // Add optional position target
@@ -574,6 +574,8 @@ export const duckTargets: Record<string, {
     'R_Thigh':    { rotation: { x: -180, y: -104, z: -42 }, eulerOrder: 'XYZ' },
     'R_Calf':     { rotation: { x: 6, y: 9, z: 103 }, eulerOrder: 'XYZ' },
     'R_Foot':     { rotation: { x: -104, y: -151, z: 82 }, eulerOrder: 'XYZ' },
+    // ADD ARM TARGETS FOR DUCK? Or assume they stay in initial pose relative to torso?
+    // For now, assume arms aren't explicitly targeted by duck, they will hold their 'stance' or 'initial' pose relative to the torso.
 };
 
 /**
@@ -675,5 +677,203 @@ export function createDuckPoseClip(
 
     if (tracks.length === 0) { console.warn(`[createDuckPoseClip] No tracks generated for ${clipName}.`); return null; }
     // Clip transitions *to* the pose. Action should clamp.
+    return new THREE.AnimationClip(clipName, duration, tracks);
+} 
+
+/**
+ * Creates a right kick animation starting from the ducking pose.
+ */
+export function createDuckKickClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    // stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, // Don't need stance here
+    clipName: string = 'DuckKick', 
+    duration: number = 0.8 // Total duration: windup + kick + retract
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0 || Object.keys(duckTargets).length === 0) {
+        console.warn("[createDuckKickClip] Missing skeleton, initial pose, or duck targets.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    // Define timings for the 5 keyframes
+    const windupTime = duration * 0.15;
+    const apexTime = duration * 0.4;
+    const retractTime = duration * 0.7;
+    const times = [0, windupTime, apexTime, retractTime, duration]; // Start(Current), Windup, Apex, Retract, End(Duck)
+    
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler1 = new THREE.Euler();
+    const tmpQuat1 = new THREE.Quaternion();
+    const tmpVec1 = new THREE.Vector3();
+    const tmpEuler2 = new THREE.Euler();
+    const tmpQuat2 = new THREE.Quaternion();
+    const tmpVec2 = new THREE.Vector3();
+
+    // Key bones involved
+    const kickingLeg = ['R_Thigh', 'R_Calf', 'R_Foot'];
+    const supportLeg = ['L_Thigh', 'L_Calf', 'L_Foot'];
+    const torsoBones = ['Hip', 'Pelvis', 'Waist', 'Spine01', 'Spine02']; 
+    // We might need arm bones later for balance, but let's keep them simple for now
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; 
+
+        // --- Get Current Pose (Frame 0) ---
+        // const currentQuat = bone.quaternion.clone(); // No longer using current pose directly
+        // const currentPos = bone.position.clone();
+
+        // --- Calculate Target End Pose (Duck Pose - Frame 4) ---
+        const duckTarget = duckTargets[boneName];
+        let targetDuckPoseQuat = new THREE.Quaternion().copy(initial.quat); // Default to initial if no target
+        let targetDuckPosePos = new THREE.Vector3().copy(initial.pos);
+        let duckPoseEulerOrder: EulerOrder = 'XYZ'; // Default order
+
+        if (duckTarget) {
+            if (duckTarget.rotation) {
+                const dt = duckTarget.rotation;
+                duckPoseEulerOrder = duckTarget.eulerOrder || 'XYZ'; 
+                tmpEuler1.set(deg(dt.x), deg(dt.y), deg(dt.z), duckPoseEulerOrder);
+                targetDuckPoseQuat.setFromEuler(tmpEuler1);
+            } // else targetDuckPoseQuat remains initial.quat
+            
+            if (duckTarget.position) {
+                 tmpVec1.set(
+                     duckTarget.position.x ?? 0,
+                     duckTarget.position.y ?? 0, 
+                     duckTarget.position.z ?? 0
+                 );
+                 // Base the final position target on initial + offset
+                 targetDuckPosePos.copy(initial.pos).add(tmpVec1); 
+            } // else targetDuckPosePos remains initial.pos
+        }
+        // Now targetDuckPoseQuat and targetDuckPosePos hold the target state for the duck pose for this bone at the END of the animation.
+
+        const keyframeQuatValues: number[] = [];
+        const keyframePosValues: number[] = [];
+        let hasPositionTrack = false; // Flag to track if we need a position track
+
+        // --- Calculate Intermediate Keyframes (Windup, Apex, Retract) ---
+
+        // Use the TARGET duck pose as the reference for calculating ALL keyframes (including start)
+        const duckEuler = new THREE.Euler().setFromQuaternion(targetDuckPoseQuat, duckPoseEulerOrder);
+
+        let windupQuat = new THREE.Quaternion();
+        let apexQuat = new THREE.Quaternion();
+        let retractQuat = new THREE.Quaternion();
+        
+        // Use the TARGET duck pose position as reference for intermediate positions
+        let windupPos = new THREE.Vector3().copy(targetDuckPosePos);
+        let apexPos = new THREE.Vector3().copy(targetDuckPosePos);
+        let retractPos = new THREE.Vector3().copy(targetDuckPosePos);
+        
+        // Calculate intermediate poses based on modifications to the TARGET duck pose
+        const windupEuler = new THREE.Euler().copy(duckEuler);
+        const apexEuler = new THREE.Euler().copy(duckEuler);
+        const retractEuler = new THREE.Euler().copy(duckEuler);
+
+        // --- Define Kick Motion --- 
+        if (kickingLeg.includes(boneName)) {
+            const kickEulerOrder: EulerOrder = 'XYZ'; // Keep XYZ for consistency with duck targets
+
+            // --- Apex (Frame 2): Define ABSOLUTE target rotations --- 
+            apexEuler.copy(duckEuler); // Reset apexEuler to target duck
+            if (boneName === 'R_Thigh') { 
+                apexEuler.set(deg(-70), deg(-100), deg(6), kickEulerOrder);
+            } 
+            if (boneName === 'R_Calf') { 
+                apexEuler.set(deg(10), deg(0), deg(0), kickEulerOrder);
+            } 
+            if (boneName === 'R_Foot') { 
+                apexEuler.set(deg(-90), deg(116), deg(77), kickEulerOrder);
+            }
+            apexQuat.setFromEuler(apexEuler.reorder(kickEulerOrder));
+            apexPos.copy(targetDuckPosePos); // Keep kicking leg bone positions at target duck reference
+
+            // --- Windup (Frame 1): Blend towards apex (keep relative calc for now) --- 
+             // Use the target duck pose as the base for windup calculation
+             windupEuler.copy(duckEuler);
+             if (boneName === 'R_Thigh') { windupEuler.x += deg(15); windupEuler.z += deg(-10); } // Adjustments relative to duck pose
+             if (boneName === 'R_Calf') { windupEuler.z += deg(30); } 
+             if (boneName === 'R_Foot') { windupEuler.x += deg(10); } 
+             windupQuat.setFromEuler(windupEuler.reorder(kickEulerOrder));
+             windupPos.copy(targetDuckPosePos); // Keep windup position same as target duck
+
+            // Retract (Frame 3): Start bringing leg back towards the target duck pose
+            // Recalculate retractEuler based on the target duck pose as reference
+            retractEuler.copy(duckEuler); // Reset retractEuler to target duck
+            if (boneName === 'R_Thigh') { retractEuler.x += deg(10); retractEuler.z += deg(-5); } 
+            if (boneName === 'R_Calf') { retractEuler.z += deg(20); } 
+            if (boneName === 'R_Foot') { retractEuler.x += deg(5); } 
+            retractQuat.setFromEuler(retractEuler.reorder(kickEulerOrder));
+            retractPos.copy(targetDuckPosePos); // Keep retract position same as target duck
+
+        } else if (supportLeg.includes(boneName)) {
+             // Keep support leg at the target duck pose throughout the intermediate frames
+             apexQuat.copy(targetDuckPoseQuat); 
+             apexPos.copy(targetDuckPosePos); 
+
+             retractQuat.copy(targetDuckPoseQuat);
+             retractPos.copy(targetDuckPosePos);
+             windupQuat.copy(targetDuckPoseQuat);
+             windupPos.copy(targetDuckPosePos); 
+
+        } else if (torsoBones.includes(boneName)) {
+             // Apex (Frame 2): Keep torso stable in the target duck pose to prevent rising
+             apexQuat.copy(targetDuckPoseQuat);
+             apexPos.copy(targetDuckPosePos); // Explicitly keep hip position down
+
+             // Windup/Retract: Keep torso at target duck pose
+             retractQuat.copy(targetDuckPoseQuat); 
+             retractPos.copy(targetDuckPosePos);
+             windupQuat.copy(targetDuckPoseQuat); // Windup matches target duck
+             windupPos.copy(targetDuckPosePos);
+        } else {
+             // Other bones (arms, head): Keep at target duck pose throughout intermediate frames
+             apexQuat.copy(targetDuckPoseQuat); 
+             apexPos.copy(targetDuckPosePos); 
+             retractQuat.copy(targetDuckPoseQuat);
+             retractPos.copy(targetDuckPosePos);
+             windupQuat.copy(targetDuckPoseQuat); // Windup matches target duck
+             windupPos.copy(targetDuckPosePos);
+        }
+        
+        // --- Add Keyframe Values --- 
+
+        // Frame 0 (Start): Target Duck Pose
+        keyframeQuatValues.push(targetDuckPoseQuat.x, targetDuckPoseQuat.y, targetDuckPoseQuat.z, targetDuckPoseQuat.w);
+        keyframePosValues.push(targetDuckPosePos.x, targetDuckPosePos.y, targetDuckPosePos.z);
+
+        // Frame 1 (Windup)
+        keyframeQuatValues.push(windupQuat.x, windupQuat.y, windupQuat.z, windupQuat.w);
+        keyframePosValues.push(windupPos.x, windupPos.y, windupPos.z);
+        if (!hasPositionTrack && !windupPos.equals(targetDuckPosePos)) hasPositionTrack = true;
+
+        // Frame 2 (Apex)
+        keyframeQuatValues.push(apexQuat.x, apexQuat.y, apexQuat.z, apexQuat.w);
+        keyframePosValues.push(apexPos.x, apexPos.y, apexPos.z);
+        if (!hasPositionTrack && !apexPos.equals(targetDuckPosePos)) hasPositionTrack = true;
+
+        // Frame 3 (Retract)
+        keyframeQuatValues.push(retractQuat.x, retractQuat.y, retractQuat.z, retractQuat.w);
+        keyframePosValues.push(retractPos.x, retractPos.y, retractPos.z);
+        if (!hasPositionTrack && !retractPos.equals(targetDuckPosePos)) hasPositionTrack = true;
+
+        // Frame 4 (End): Target Duck Pose
+        keyframeQuatValues.push(targetDuckPoseQuat.x, targetDuckPoseQuat.y, targetDuckPoseQuat.z, targetDuckPoseQuat.w);
+        keyframePosValues.push(targetDuckPosePos.x, targetDuckPosePos.y, targetDuckPosePos.z);
+
+        // --- Add Tracks --- 
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeQuatValues));
+        
+        // Add Position Track ONLY if any intermediate frame's position differs from the start/end target duck position
+        if (hasPositionTrack) {
+            tracks.push(new THREE.VectorKeyframeTrack(`${boneName}.position`, times, keyframePosValues));
+        }
+    });
+
+    if (tracks.length === 0) { console.warn(`[createDuckKickClip] No tracks generated for ${clipName}.`); return null; }
     return new THREE.AnimationClip(clipName, duration, tracks);
 } 
