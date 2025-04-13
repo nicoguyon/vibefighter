@@ -13,6 +13,7 @@ import {
     createRightPunchClip,
     createDuckPoseClip,
     createBlockPoseClip,
+    createDuckKickClip,
     defaultFightStanceTargets, // Needed by createWalkCycleClip 
     blockTargets,
     type InitialPoseData, 
@@ -27,6 +28,7 @@ export interface PlayerCharacterHandle {
     resetVelocityX: () => void;
     getHasHitGround: () => boolean;
     isAttacking: () => boolean;
+    isDucking: () => boolean;
     confirmHit: () => void;
     getCanDamage: () => boolean;
     isBlocking: () => boolean;
@@ -81,6 +83,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     const isAttackingRef = useRef(false);
     const canDamageRef = useRef(false); // Tracks if the current attack instance can still deal damage
     const isBlockingRef = useRef(false);
+    const isDuckingRef = useRef(false); // Track ducking state
 
     // Movement/State refs
     const manualVelocityRef = useRef({ x: 0, y: 0, z: 0 });
@@ -106,12 +109,13 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         },
         getHasHitGround: () => hasHitGround.current,
         isAttacking: () => isAttackingRef.current,
+        isDucking: () => isDuckingRef.current,
         confirmHit: () => { 
             canDamageRef.current = false; 
         },
         getCanDamage: () => canDamageRef.current,
         isBlocking: () => isBlockingRef.current
-    }), [isAttackingRef, canDamageRef, isBlockingRef]);
+    }), [isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef]);
 
     // --- State ---
     const [pressedKeys, setPressedKeys] = useState<{ 
@@ -222,6 +226,10 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
         return createBlockPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets);
     }, [initialPose]);
+    const duckKickClip = useMemo(() => {
+        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
+        return createDuckKickClip(skeletonRef.current, initialPose);
+    }, [initialPose]);
 
     // --- Setup Animation Actions ---
     const animationsToUse = useMemo(() => {
@@ -232,8 +240,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         if (rightPunchClip) clips.push(rightPunchClip);
         if (duckPoseClip) clips.push(duckPoseClip);
         if (blockPoseClip) clips.push(blockPoseClip);
+        if (duckKickClip) clips.push(duckKickClip);
         return clips;
-    }, [walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip, duckPoseClip, blockPoseClip]);
+    }, [walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip, duckPoseClip, blockPoseClip, duckKickClip]);
     const { actions, mixer } = useAnimations(animationsToUse, groupRef);
 
     // --- Configure Animation Actions ---
@@ -247,6 +256,10 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             actions.BlockPose.setLoop(THREE.LoopOnce, 1);
             actions.BlockPose.clampWhenFinished = true;
          }
+         if (actions?.DuckKick) {
+            actions.DuckKick.setLoop(THREE.LoopOnce, 1);
+            actions.DuckKick.clampWhenFinished = true;
+         }
 
         // Initial Idle play
         if (actions?.IdleBreath && !isInStance.current) {
@@ -258,15 +271,30 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
     // --- Mixer Finished Listener --- 
     useEffect(() => {
-        if (!mixer || !actions) return;
-        const listener = (e: AnimationFinishedEvent) => {
-            if (e.action === actions.RightPunch) { 
+         if (!mixer || !actions) return;
+         const idleAction = actions.IdleBreath;
+         const duckAction = actions.DuckPose; // Get duck action for transitions
+         const listener = (e: AnimationFinishedEvent) => {
+            if (e.action === actions.RightPunch) {
                 isActionInProgress.current = false; 
                 isAttackingRef.current = false;
                 canDamageRef.current = false;
-                if (!isBlockingRef.current && !isMovingHorizontally.current) {
-                    actions.IdleBreath?.reset().fadeIn(0.3).play(); 
+                if (!isBlockingRef.current && !isMovingHorizontally.current && !isDuckingRef.current) {
+                    idleAction?.reset().fadeIn(0.3).play(); 
                 }
+            } else if (e.action === actions.DuckKick) {
+                isActionInProgress.current = false;
+                isAttackingRef.current = false;
+                canDamageRef.current = false;
+                isDuckingRef.current = true; // Remain ducking after kick
+                // Fade back into the held duck pose smoothly if the user is still holding duck
+                duckAction?.reset().fadeIn(0.1).play(); 
+            } else if (e.action === actions.DuckPose) {
+                // isDuckingRef is already true from the trigger
+                isActionInProgress.current = false; // Duck transition finished
+            } else if (e.action === actions.BlockPose) {
+                isActionInProgress.current = false; // Block transition finished
+                // isBlockingRef is already true from the trigger
             }
         };
         mixer.addEventListener('finished', listener);
@@ -276,56 +304,115 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     // --- Effect to Handle Action Triggers --- 
     useEffect(() => {
         const shouldBeBlocking = !isPlayerControlled ? forceBlock : pressedKeys.block;
+        const shouldBeDucking = pressedKeys.duck;
         
         const idleAction = actions?.IdleBreath;
         const walkAction = actions?.WalkCycle;
         const punchAction = actions?.RightPunch;
         const duckAction = actions?.DuckPose;
         const blockAction = actions?.BlockPose;
+        const kickAction = actions?.DuckKick;
 
-        if (shouldBeBlocking && !isActionInProgress.current && blockAction) {
+        // --- Blocking --- 
+        if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
             isActionInProgress.current = true;
             isBlockingRef.current = true;
+            isDuckingRef.current = false; // Can't block and duck
             idleAction?.fadeOut(0.1);
             walkAction?.fadeOut(0.1);
             punchAction?.fadeOut(0.1);
             duckAction?.fadeOut(0.1);
-            blockAction.reset().fadeIn(0.2).play();
-        }
-        else if (!shouldBeBlocking && isBlockingRef.current && blockAction) {
-            blockAction.fadeOut(0.2);
+            kickAction?.fadeOut(0.1);
+            blockAction?.reset().fadeIn(0.2).play();
+        } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
+            isActionInProgress.current = true; // For fade out duration
+            blockAction?.fadeOut(0.2);
             isBlockingRef.current = false;
+            // Determine next state after blocking stops
+            setTimeout(() => { // Delay setting action false until fade potentially finishes
+                 isActionInProgress.current = false;
+                 if (shouldBeDucking && !isDuckingRef.current) {
+                     // Trigger duck if key is held
+                     triggerDuck(); 
+                 } else if (isInStance.current && !isMovingHorizontally.current && !shouldBeDucking) {
+                     idleAction?.reset().fadeIn(0.3).play();
+                 }
+            }, 200); // Match fade out duration
+        }
+
+        // --- Ducking --- 
+        else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
+            triggerDuck();
+        } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
+            triggerStandUp();
+        }
+
+        // --- Punch/Kick --- 
+        else if (pressedKeys.punch && !isActionInProgress.current && !isBlockingRef.current) { // Check punch trigger, ignore if blocking
+            if (isDuckingRef.current && kickAction) { // Trigger Duck Kick
+                 triggerKick();
+            } else if (!isDuckingRef.current && punchAction) { // Trigger Normal Punch
+                 triggerPunch();
+            }
+        }
+
+    }, [pressedKeys, forceBlock, actions, isInStance, isPlayerControlled, isDuckingRef, isBlockingRef, isActionInProgress]);
+
+    // --- Helper Action Triggers --- 
+    const triggerDuck = useCallback(() => {
+        if (!actions?.DuckPose) return;
+        console.log("Triggering Duck");
+        isActionInProgress.current = true;
+        isDuckingRef.current = true;
+        actions.IdleBreath?.fadeOut(0.1);
+        actions.WalkCycle?.fadeOut(0.1);
+        actions.RightPunch?.fadeOut(0.1);
+        actions.BlockPose?.fadeOut(0.1);
+        actions.DuckKick?.fadeOut(0.1);
+        actions.DuckPose.reset().fadeIn(0.2).play();
+    }, [actions]);
+
+    const triggerStandUp = useCallback(() => {
+        if (!actions?.DuckPose || !isDuckingRef.current) return;
+        console.log("Triggering Stand Up");
+        isActionInProgress.current = true; // Mark as busy during fade
+        actions.DuckPose.fadeOut(0.2);
+        isDuckingRef.current = false;
+        setTimeout(() => { // Allow fade out before potentially going idle
             isActionInProgress.current = false;
-            if (isInStance.current && !isMovingHorizontally.current) {
-                idleAction?.reset().fadeIn(0.3).play();
+            if (isInStance.current && !isMovingHorizontally.current && !pressedKeys.block) { // Don't idle if blocking
+                actions.IdleBreath?.reset().fadeIn(0.3).play();
             }
-        }
-        else if (pressedKeys.duck && !isActionInProgress.current && duckAction) {
-            isActionInProgress.current = true;
-            idleAction?.fadeOut(0.1);
-            walkAction?.fadeOut(0.1);
-            punchAction?.fadeOut(0.1);
-            blockAction?.fadeOut(0.1);
-            duckAction.reset().fadeIn(0.2).play();
-        }
-        else if (!pressedKeys.duck && isActionInProgress.current && !isBlockingRef.current && duckAction && duckAction.getEffectiveWeight() > 0) {
-            duckAction.fadeOut(0.2);
-            isActionInProgress.current = false; 
-            if (isInStance.current && !isMovingHorizontally.current) {
-                idleAction?.reset().fadeIn(0.3).play();
-            }
-        }
-        else if (pressedKeys.punch && !isActionInProgress.current && punchAction) { 
-            isActionInProgress.current = true;
-            isAttackingRef.current = true;
-            canDamageRef.current = true;
-            idleAction?.fadeOut(0.1);
-            walkAction?.fadeOut(0.1);
-            blockAction?.fadeOut(0.1);
-            duckAction?.fadeOut(0.1);
-            punchAction.reset().fadeIn(0.1).play();
-        }
-    }, [pressedKeys, forceBlock, actions, isInStance, isPlayerControlled]);
+        }, 200); // Match fade out duration
+    }, [actions, isInStance, pressedKeys.block]); // Include block key check
+
+    const triggerKick = useCallback(() => {
+        if (!actions?.DuckKick) return;
+        console.log("Triggering Kick");
+        isActionInProgress.current = true;
+        isAttackingRef.current = true;
+        canDamageRef.current = true;
+        actions.IdleBreath?.fadeOut(0.1);
+        actions.WalkCycle?.fadeOut(0.1);
+        actions.BlockPose?.fadeOut(0.1);
+        actions.RightPunch?.fadeOut(0.1); // Fade out punch if somehow active
+        // Don't fade out DuckPose, kick should interrupt/override smoothly
+        actions.DuckKick.reset().fadeIn(0.1).play();
+    }, [actions]);
+
+     const triggerPunch = useCallback(() => {
+        if (!actions?.RightPunch) return;
+        console.log("Triggering Punch");
+        isActionInProgress.current = true;
+        isAttackingRef.current = true;
+        canDamageRef.current = true;
+        actions.IdleBreath?.fadeOut(0.1);
+        actions.WalkCycle?.fadeOut(0.1);
+        actions.BlockPose?.fadeOut(0.1);
+        actions.DuckPose?.fadeOut(0.1);
+        actions.DuckKick?.fadeOut(0.1);
+        actions.RightPunch.reset().fadeIn(0.1).play();
+    }, [actions]);
 
     // --- Frame Update (Manual Movement, Jump & Animation Trigger) ---
     useFrame((state, delta) => { 

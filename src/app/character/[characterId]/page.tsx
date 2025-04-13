@@ -21,7 +21,7 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
     // For truly server-only access bypassing RLS, initialize a separate admin client here.
     const { data: characterData, error } = await supabase
         .from('characters')
-        .select('id, name, model_glb_url, status, concept_image_url') // Select concept image too
+        .select('id, name, model_glb_url, status, concept_image_url, name_audio_url') // Select audio URL too
         .eq('id', characterId)
         .single();
 
@@ -35,13 +35,19 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
         notFound();
     }
 
-    // Construct absolute R2 URL if necessary and not already absolute
+    // Construct absolute R2 URL if necessary and not already absolute for model
     let finalModelUrl = characterData.model_glb_url;
     if (finalModelUrl && !finalModelUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
         finalModelUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalModelUrl}`;
     }
 
-    // Handle cases where model isn't ready yet
+    // Construct absolute R2 URL for audio if necessary
+    let finalAudioUrl = characterData.name_audio_url;
+     if (finalAudioUrl && !finalAudioUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
+        finalAudioUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalAudioUrl}`;
+    }
+
+    // Handle cases where model isn't ready yet (audio URL doesn't block rendering here)
     if (characterData.status !== 'complete' || !finalModelUrl) {
         return (
              <main className="flex min-h-screen flex-col items-center justify-center p-8">
@@ -61,7 +67,7 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
                 </h1>
             </div>
            
-            <CharacterViewer modelUrl={finalModelUrl} />
+            <CharacterViewer modelUrl={finalModelUrl} nameAudioUrl={finalAudioUrl} />
 
         </main>
     );

@@ -9,6 +9,7 @@ import {
     createFightStanceClip, 
     createResetPoseClip, 
     createIdleBreathClip, 
+    createRightPunchClip, // Import punch clip
     type EulerOrder, 
     type InitialPoseData, 
     defaultFightStanceTargets
@@ -23,55 +24,44 @@ interface AnimationFinishedEvent extends THREE.Event {
 
 interface ModelProps {
     url: string;
-    setAutoRotate: React.Dispatch<React.SetStateAction<boolean>>;
+    // setAutoRotate: React.Dispatch<React.SetStateAction<boolean>>; // No longer needed
     setMixer: React.Dispatch<React.SetStateAction<THREE.AnimationMixer | null>>;
     setInitialPose: React.Dispatch<React.SetStateAction<Record<string, InitialPoseData>>>;
     setSkeleton: React.Dispatch<React.SetStateAction<THREE.Skeleton | null>>;
 }
 
-function Model({ url, setAutoRotate, setMixer, setInitialPose, setSkeleton }: ModelProps) {
-    // useGLTF.preload(url); // Optional: Preload for faster display
-    const { scene, animations } = useGLTF(url); // Get animations too if they exist
-    const modelRef = useRef<THREE.Group>(null!); // Ref to the model group (THREE.Group)
+function Model({ url, /* setAutoRotate, */ setMixer, setInitialPose, setSkeleton }: ModelProps) {
+    const { scene } = useGLTF(url);
+    const modelRef = useRef<THREE.Group>(null!); 
 
-    // Apply basic transformations if needed
     useEffect(() => {
         if (scene) {
-            // Rotate model to face camera (+Z direction)
             scene.rotation.y = -Math.PI / 2;
-
-            // Create and set mixer
             const mixerInstance = new THREE.AnimationMixer(scene);
             setMixer(mixerInstance);
-
             let foundSkeleton: THREE.Skeleton | null = null;
             const pose: Record<string, InitialPoseData> = {};
-
             scene.traverse((child) => {
                 if (child instanceof THREE.SkinnedMesh) {
                     child.castShadow = true;
                     child.receiveShadow = true;
                     if (child.skeleton instanceof THREE.Skeleton) {
-                         foundSkeleton = child.skeleton;
+                        foundSkeleton = child.skeleton;
                     }
                 }
-                // Simplified fallback (less common)
                 if (!foundSkeleton && child instanceof THREE.Bone) {
-                     let parent = child.parent;
-                     while(parent && !(parent as any).skeleton) parent = parent.parent;
-                     if(parent && (parent as any).skeleton instanceof THREE.Skeleton) {
-                          foundSkeleton = (parent as any).skeleton;
-                     }
+                    let parent = child.parent;
+                    while(parent && !(parent as any).skeleton) parent = parent.parent;
+                    if(parent && (parent as any).skeleton instanceof THREE.Skeleton) {
+                        foundSkeleton = (parent as any).skeleton;
+                    }
                 }
             });
-
             if (foundSkeleton) {
                 console.log("--- [Model] Found Skeleton ---");
-                console.log("[Model] Available Bones:");
-                // Temporarily ignore TS error, logic is sound due to outer if
-                // @ts-ignore 
-                foundSkeleton.bones.forEach((bone: THREE.Bone) => {
-                    console.log(`- ${bone.name}`);
+                // Explicitly type skeleton here to satisfy linter after check
+                (foundSkeleton as THREE.Skeleton).bones.forEach((bone: THREE.Bone) => {
+                    // console.log(`- ${bone.name}`); // Reduce console spam
                     pose[bone.name] = {
                         pos: bone.position.clone(),
                         quat: bone.quaternion.clone(),
@@ -82,207 +72,209 @@ function Model({ url, setAutoRotate, setMixer, setInitialPose, setSkeleton }: Mo
             } else {
                 console.warn("[Model] Could not find skeleton.");
             }
-            // Set state even if skeleton/pose is empty/null
             setSkeleton(foundSkeleton);
             setInitialPose(pose);
         }
-
-        // Cleanup mixer on component unmount or scene change
         return () => {
             setMixer(null);
             setInitialPose({});
             setSkeleton(null);
         };
+    }, [scene, setMixer, setInitialPose, setSkeleton]); // Removed animations dependency
 
-    }, [scene, setMixer, setInitialPose, setSkeleton, animations]);
+    // Removed interaction handler and pointer events as auto-rotate is always on
 
-    // Stop auto-rotation when user interacts
-    const handleInteraction = useCallback(() => {
-        if (setAutoRotate) setAutoRotate(false);
-    }, [setAutoRotate]);
-
-    // Pointer events for interaction detection
-    const pointerEvents = useMemo(() => ({
-        onPointerDown: handleInteraction,
-        onWheel: handleInteraction,
-    }), [handleInteraction]);
-
-    return <primitive object={scene} ref={modelRef} {...pointerEvents} />;
+    return <primitive object={scene} ref={modelRef} />;
 }
 
-// New component to handle the animation loop inside Canvas
+// --- AnimationRunner Component (no changes) --- 
 interface AnimationRunnerProps {
     mixer: THREE.AnimationMixer | null;
 }
-
 function AnimationRunner({ mixer }: AnimationRunnerProps) {
     useFrame((_, delta) => {
         mixer?.update(delta);
     });
-    return null; // This component doesn't render anything itself
+    return null; 
 }
 
-// --- CharacterViewer Component ---
+// --- CharacterViewer Component --- 
 interface CharacterViewerProps { 
     modelUrl: string;
+    nameAudioUrl?: string; // Add optional audio URL prop
 }
 
-export default function CharacterViewer({ modelUrl }: CharacterViewerProps) {
-    const [autoRotate, setAutoRotate] = useState(true);
+export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterViewerProps) {
+    // const [autoRotate, setAutoRotate] = useState(true); // Removed, always auto-rotate
     const [mixer, setMixer] = useState<THREE.AnimationMixer | null>(null);
     const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({});
     const [skeleton, setSkeleton] = useState<THREE.Skeleton | null>(null);
+    const [actionsReady, setActionsReady] = useState<boolean>(false); // <-- New state flag
     const [resetPoseAction, setResetPoseAction] = useState<THREE.AnimationAction | null>(null);
     const [fightStanceAction, setFightStanceAction] = useState<THREE.AnimationAction | null>(null);
-    const [idleBreathAction, setIdleBreathAction] = useState<THREE.AnimationAction | null>(null); // <-- New State
-    const [isPlaying, setIsPlaying] = useState(false); // True if stance OR breathing is active
+    const [idleBreathAction, setIdleBreathAction] = useState<THREE.AnimationAction | null>(null); 
+    const [rightPunchAction, setRightPunchAction] = useState<THREE.AnimationAction | null>(null); // <-- New State for punch
+    const [audioPlayed, setAudioPlayed] = useState(false); // Track audio playback
+    const punchIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for punch interval timer
+    const stanceTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for initial stance delay timeout
 
-    // Use the imported defaultFightStanceTargets directly
     const fightStanceTargets = defaultFightStanceTargets;
 
-    // --- Log state changes (Keep) ---
-    useEffect(() => { console.log("[Viewer] Mixer updated:", !!mixer); }, [mixer]);
-    useEffect(() => { console.log("[Viewer] Skeleton updated:", !!skeleton); }, [skeleton]);
-    useEffect(() => { console.log("[Viewer] Initial Pose updated:", Object.keys(initialPose).length, "bones"); }, [initialPose]);
+    // --- Play Audio Once --- 
+    useEffect(() => {
+        if (nameAudioUrl && !audioPlayed) {
+            console.log("[Viewer] Playing name audio:", nameAudioUrl);
+            const audio = new Audio(nameAudioUrl);
+            audio.play().catch(err => console.error("Audio playback failed:", err));
+            setAudioPlayed(true); // Ensure it plays only once
+        }
+    }, [nameAudioUrl, audioPlayed]);
 
-    // --- Create Animation Actions & Setup Listener --- 
+    // --- Play Punch Function (Stable Callback) --- 
+    const playPunch = useCallback(() => {
+        if (!rightPunchAction || !mixer || !idleBreathAction) {
+            console.warn("[Viewer] playPunch: Cannot play punch - Action, Mixer or IdleAction missing. Scheduling retry.");
+             if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
+             punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000); 
+            return;
+        }
+        console.log("[Viewer] playPunch: Triggering Punch Action..."); 
+        idleBreathAction.stop(); 
+        rightPunchAction.reset().fadeIn(0.2).play();
+    }, [rightPunchAction, idleBreathAction, mixer]); 
+
+    // --- Animation Finished Listener (Stable Callback) --- 
+    const onAnimationFinished = useCallback((event: AnimationFinishedEvent) => {
+        console.log(`[Viewer] Animation Finished: ${event.action.getClip().name}`);
+
+        if (punchIntervalRef.current) {
+            console.log("[Viewer] Finished Listener: Clearing existing punch timer.");
+            clearTimeout(punchIntervalRef.current);
+            punchIntervalRef.current = null; 
+        }
+
+        // Use action state directly
+        if (fightStanceAction && event.action === fightStanceAction) {
+            console.log("[Viewer] Finished Listener: Fight Stance Finished. Starting Idle Breath.");
+            idleBreathAction?.reset().setEffectiveWeight(1).fadeIn(0.3).play(); 
+            console.log("[Viewer] Finished Listener: Scheduling FIRST punch timer.");
+            punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000);
+        } else if (rightPunchAction && event.action === rightPunchAction) {
+            console.log("[Viewer] Finished Listener: Punch Finished. Returning to Idle Breath.");
+            rightPunchAction.stop(); 
+            idleBreathAction?.reset().setEffectiveWeight(1).fadeIn(0.3).play(); 
+            console.log("[Viewer] Finished Listener: Scheduling NEXT punch timer.");
+            punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000);
+        }
+    }, [fightStanceAction, idleBreathAction, rightPunchAction, playPunch]); // Depend on actions and playPunch
+
+    // --- Create Animation Actions --- 
     useEffect(() => {
         if (mixer && skeleton && Object.keys(initialPose).length > 0) {
-            // Keep track of actions created in this effect run for listener closure
-            let localStanceAction: THREE.AnimationAction | null = null;
-            let localResetAction: THREE.AnimationAction | null = null;
-            let localIdleAction: THREE.AnimationAction | null = null;
+            console.log("[Viewer] Creating/Updating animation actions...");
+            let allActionsCreated = true;
+            setActionsReady(false); 
 
-            // Create Fight Stance Action
-            const stanceClip = createFightStanceClip(skeleton, initialPose, fightStanceTargets, 'FightStance');
+            const stanceClip = createFightStanceClip(skeleton, initialPose, fightStanceTargets, 'FightStance', 0.5);
             if (stanceClip) {
-                localStanceAction = mixer.clipAction(stanceClip);
-                localStanceAction.setLoop(THREE.LoopOnce, 1);
-                localStanceAction.clampWhenFinished = true;
-                setFightStanceAction(localStanceAction); // Update state
-                console.log("[Viewer] Fight Stance Action created.");
-            } else { console.error("[Viewer] Failed to create Fight Stance Clip/Action."); }
+                const action = mixer.clipAction(stanceClip).setLoop(THREE.LoopOnce, 1);
+                action.clampWhenFinished = true;
+                setFightStanceAction(action);
+            } else { console.error("[Viewer] Failed to create Fight Stance."); allActionsCreated = false; }
 
-            // Create Reset Action
-            const resetClip = createResetPoseClip(skeleton, initialPose);
+            const resetClip = createResetPoseClip(skeleton, initialPose, 0.3);
             if (resetClip) {
-                localResetAction = mixer.clipAction(resetClip);
-                localResetAction.setLoop(THREE.LoopOnce, 1);
-                localResetAction.clampWhenFinished = true;
-                setResetPoseAction(localResetAction); // Update state
-                console.log("[Viewer] Reset Pose Action created.");
-            } else { console.error("[Viewer] Failed to create Reset Pose Clip/Action."); }
+                const action = mixer.clipAction(resetClip).setLoop(THREE.LoopOnce, 1);
+                action.clampWhenFinished = true;
+                setResetPoseAction(action);
+            } else { console.error("[Viewer] Failed to create Reset Pose."); }
             
-            // Create Idle Breath Action
-            const breathClip = createIdleBreathClip(skeleton, fightStanceTargets, initialPose);
+            const breathClip = createIdleBreathClip(skeleton, fightStanceTargets, initialPose, 'IdleBreath', 3.0);
             if (breathClip) {
-                localIdleAction = mixer.clipAction(breathClip);
-                localIdleAction.setLoop(THREE.LoopRepeat, Infinity);
-                setIdleBreathAction(localIdleAction); // Update state
-                 console.log("[Viewer] Idle Breath Action created.");
-            } else { console.error("[Viewer] Failed to create Idle Breath Clip/Action."); }
+                const action = mixer.clipAction(breathClip).setLoop(THREE.LoopRepeat, Infinity);
+                action.setEffectiveWeight(0); 
+                setIdleBreathAction(action);
+            } else { console.error("[Viewer] Failed to create Idle Breath."); allActionsCreated = false; }
 
-            // Single listener for all actions
-            const onAnimationFinished = (event: AnimationFinishedEvent) => {
-                // Check which action finished
-                if (localStanceAction && event.action === localStanceAction) {
-                    console.log("[Viewer] Fight Stance Finished. Starting Idle Breath.");
-                     if (localIdleAction) {
-                         localIdleAction.reset().fadeIn(0.3).play(); // Fade in breathing
-                         // Keep isPlaying = true
-                     }
-                } else if (localResetAction && event.action === localResetAction) {
-                    console.log("[Viewer] Reset Pose Finished.");
-                    setIsPlaying(false); // Now set to false
-                    setAutoRotate(true); // Re-enable auto-rotate after reset
-                }
-            };
+            const punchClip = createRightPunchClip(skeleton, initialPose, fightStanceTargets, 'RightPunch', 0.6);
+            if (punchClip) {
+                const action = mixer.clipAction(punchClip).setLoop(THREE.LoopOnce, 1);
+                action.clampWhenFinished = true;
+                setRightPunchAction(action);
+            } else { console.error("[Viewer] Failed to create Right Punch."); allActionsCreated = false; }
 
+            if (allActionsCreated) {
+                 console.log("[Viewer] All actions created successfully.");
+                 setActionsReady(true); 
+            }
+        }
+         // Cleanup: Reset ready state when dependencies change
+         return () => {
+             setActionsReady(false);
+         };
+    }, [mixer, skeleton, initialPose, fightStanceTargets]); 
+
+     // --- Add/Remove Mixer Listener --- 
+     useEffect(() => {
+        if (mixer) {
+            console.log("[Viewer] Attaching 'finished' listener to mixer.");
             mixer.addEventListener('finished', onAnimationFinished);
-            console.log("[Viewer] Added 'finished' listener.");
-
-            // Cleanup function
-            return () => {
-                 console.log("[Viewer] Cleaning up actions and listener.");
-                if (mixer) {
-                     mixer.removeEventListener('finished', onAnimationFinished);
-                     // Stop actions associated with *this specific effect run* 
-                     localStanceAction?.stop();
-                     localResetAction?.stop();
-                     localIdleAction?.stop();
-                }
-                 // Clear state on cleanup as well
-                 setFightStanceAction(null);
-                 setResetPoseAction(null);
-                 setIdleBreathAction(null);
-            };
         }
-    }, [mixer, skeleton, initialPose, fightStanceTargets]); // Rerun when these change
+        // Cleanup: Remove listener when mixer changes or component unmounts
+        return () => {
+            if (mixer) {
+                 console.log("[Viewer] Removing 'finished' listener from mixer.");
+                 mixer.removeEventListener('finished', onAnimationFinished);
+            }
+        };
+     }, [mixer, onAnimationFinished]); // Depend on mixer instance and stable listener function
 
-    // --- Play Fight Stance Sequence Handler --- 
-    const playFightStanceSequence = useCallback(() => {
-        // Use state variables directly here
-        if (!fightStanceAction || !mixer) {
-             console.warn("Cannot play stance sequence: Action or Mixer missing.");
-            return;
+    // --- Effect to Trigger Initial Stance --- 
+    useEffect(() => {
+        if (stanceTimeoutRef.current) {
+            clearTimeout(stanceTimeoutRef.current);
+            stanceTimeoutRef.current = null;
         }
-        console.log("[Viewer] Triggering Fight Stance...");
-        setIsPlaying(true);
-        setAutoRotate(false);
-        
-        // Stop other actions cleanly using fades
-        resetPoseAction?.fadeOut(0.2);
-        idleBreathAction?.fadeOut(0.2); 
-        
-        // Play stance with fade in
-        fightStanceAction.reset().fadeIn(0.2).play();
 
-    }, [fightStanceAction, resetPoseAction, idleBreathAction, mixer, setAutoRotate]); // Dependencies
-
-    // --- Reset Pose Handler --- 
-    const triggerResetPose = useCallback(() => {
-         // Use state variables directly here
-        if (!resetPoseAction || !mixer) {
-             console.warn("Cannot play reset sequence: Action or Mixer missing.");
-            return;
+        if (actionsReady && fightStanceAction) {
+            console.log("[Viewer] Actions ready, setting timeout for Fight Stance...");
+             stanceTimeoutRef.current = setTimeout(() => {
+                 console.log("[Viewer] Timeout finished: Playing Fight Stance!");
+                 idleBreathAction?.stop();
+                 rightPunchAction?.stop();
+                 resetPoseAction?.stop();
+                 fightStanceAction.reset().fadeIn(0.3).play();
+            }, 500); 
+        } else if (actionsReady) {
+            console.warn("[Viewer] Actions ready, but fightStanceAction is missing!");
         }
-        console.log("[Viewer] Triggering Reset Pose...");
-        setIsPlaying(false); // Indicate we are returning to idle
-        setAutoRotate(false); // Keep off until reset finishes via the listener
 
-        // Stop other actions cleanly using fades
-        fightStanceAction?.fadeOut(0.2);
-        idleBreathAction?.fadeOut(0.2); 
+        return () => {
+            console.log("[Viewer] Cleaning up initial stance trigger effect...");
+            if (stanceTimeoutRef.current) {
+                clearTimeout(stanceTimeoutRef.current);
+                stanceTimeoutRef.current = null;
+                 console.log("[Viewer] Cleared pending stance timeout.");
+            }
+        };
+    }, [actionsReady, fightStanceAction, idleBreathAction, rightPunchAction, resetPoseAction]); 
 
-        // Play reset with fade in
-        resetPoseAction.reset().fadeIn(0.2).play();
-
-    }, [resetPoseAction, fightStanceAction, idleBreathAction, mixer, setAutoRotate]); // Dependencies
+     // --- Global Cleanup Effect --- 
+     useEffect(() => {
+         return () => {
+            console.log("[Viewer] Component unmounting: Final cleanup.");
+            if (stanceTimeoutRef.current) clearTimeout(stanceTimeoutRef.current);
+            if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
+         }
+     }, []); 
 
     return (
         <>
+            {/* Container maintains full screen */}
             <div className="relative w-full h-screen bg-gradient-to-br from-arcade-dark-gray to-arcade-bg">
-                {/* Button Layout - Adjust disabled logic */} 
-                 <div className="absolute top-24 left-4 z-10 flex flex-col gap-2"> 
-                     <button
-                        onClick={playFightStanceSequence}
-                        // Disable if actions aren't ready OR if currently playing stance/breathing
-                        disabled={!fightStanceAction || !resetPoseAction || !idleBreathAction || isPlaying}
-                        className={`btn-arcade ${(!fightStanceAction || !resetPoseAction || !idleBreathAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-action"}`}
-                    >
-                        {/* Text can be simple or change based on isPlaying */}
-                         Fight Stance
-                    </button>
-                    <button
-                        onClick={triggerResetPose}
-                        // Disable only if reset action isn't ready
-                        disabled={!resetPoseAction}
-                        className={`btn-arcade ${!resetPoseAction ? "btn-arcade-disabled" : "btn-arcade-primary"}`}
-                    >
-                        Reset Pose
-                    </button>
-                </div>
-                {/* Canvas setup remains the same */}
+                {/* Buttons are removed */}
+                 
+                 {/* Canvas setup */}
                 <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >
                      <ambientLight intensity={0.7} />
                      <directionalLight 
@@ -293,15 +285,13 @@ export default function CharacterViewer({ modelUrl }: CharacterViewerProps) {
                         shadow-mapSize-height={1024} 
                     />
                     <hemisphereLight intensity={0.4} groundColor="#555" />
-                     <Suspense fallback={
-                        <Html center>
-                             <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p>
-                        </Html>
-                    }>
-                         <Model url={modelUrl} setAutoRotate={setAutoRotate} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
+                     <Suspense fallback={ <Html center> <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p> </Html> }>
+                         {/* Pass setAutoRotate is removed */}
+                         <Model url={modelUrl} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
                          <AnimationRunner mixer={mixer} />
                      </Suspense>
-                     <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} autoRotate={autoRotate} autoRotateSpeed={1.5} target={[0, 0.5, 0]} onChange={() => { if (autoRotate) setAutoRotate(false); }} />
+                     {/* OrbitControls always auto-rotates, removed onChange handler */}
+                     <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} autoRotate={true} autoRotateSpeed={1.5} target={[0, 0.5, 0]} />
                 </Canvas>
             </div>
         </>

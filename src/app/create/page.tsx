@@ -219,23 +219,49 @@ export default function CreateCharacter() {
       return;
     }
     setError(null);
-    console.log(`Saving final name: ${characterName} for character: ${characterId}`);
+    console.log(`[CreatePage] Calling API to save final name: ${characterName} for character: ${characterId}`);
 
     try {
-      const { error: updateError } = await supabase
-        .from('characters')
-        .update({ name: characterName.trim() })
-        .eq('id', characterId);
+      // Call the new API route instead of direct Supabase update
+      const response = await fetch('/api/update-character-name', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          characterId: characterId, 
+          name: characterName.trim() 
+        }),
+      });
 
-      if (updateError) throw updateError;
+      if (!response.ok) {
+        // Try to parse the error message from the API response
+        let errorMessage = `Failed to save name (HTTP ${response.status})`;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.error || errorMessage;
+        } catch (parseError) {
+          // Ignore if response body isn't valid JSON
+          console.error("Failed to parse error response from /api/update-character-name");
+        }
+        throw new Error(errorMessage);
+      }
 
-      console.log("Character name saved successfully.");
-      setIsNameConfirmed(true); // <-- Mark name as confirmed
+      const result = await response.json(); // Read the success response
+      
+      if (result.success) {
+          console.log("[CreatePage] Character name saved successfully via API.");
+          setIsNameConfirmed(true); // <-- Mark name as confirmed
+      } else {
+          // This case shouldn't happen if API returns correct structure, but good to handle
+          throw new Error("API indicated name save failed.");
+      }
       // Navigation is handled by the useEffect hook now
 
     } catch (error: any) {
-      console.error("Error saving character name:", error);
+      console.error("[CreatePage] Error calling API to save character name:", error);
       setError(error.message || "Failed to save character name.");
+      // Keep isNameConfirmed false if error occurs
     }
   };
 

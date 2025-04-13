@@ -3,20 +3,23 @@
 import { useEffect } from 'react';
 import Image from "next/image";
 import { useRouter } from 'next/navigation'; // Import useRouter
+import { useAudio } from '@/contexts/AudioContext'; // Import useAudio
 
 export default function Home() {
   const router = useRouter(); // Initialize router
+  const { startPlayback } = useAudio(); // Get startPlayback function
 
-  // Function to navigate to character select
-  const goToSelect = () => {
-    router.push('/select');
+  // Function to handle interaction (click or Enter)
+  const handleInteraction = () => {
+    startPlayback(); // Start the audio
+    router.push('/select'); // Navigate
   };
 
   // Effect to handle 'Enter' key press
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Enter') {
-        goToSelect();
+        handleInteraction(); // Call the combined handler
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -24,12 +27,12 @@ export default function Home() {
       window.removeEventListener('keydown', handleKeyDown);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Empty dependency array, runs once
+  }, [handleInteraction]); // Add handleInteraction to dependency array
 
   return (
     // Adjusted main container for direct centering
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
-       <div className="text-center cursor-pointer group" onClick={goToSelect}>
+       <div className="text-center cursor-pointer group" onClick={handleInteraction}>
          <Image
            src="/images/vibefighter-logo.svg"
            alt="VibeFighter Logo"

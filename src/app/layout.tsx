@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AudioProvider } from "@/components/AudioProvider";
+import { MuteButton } from "@/components/MuteButton";
 
 export const metadata: Metadata = {
   title: "VibeFighter",
@@ -13,7 +15,12 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body>{children}</body>
+      <body>
+        <AudioProvider>
+          {children}
+          <MuteButton />
+        </AudioProvider>
+      </body>
     </html>
   );
 }
