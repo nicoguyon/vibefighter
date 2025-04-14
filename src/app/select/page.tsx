@@ -10,6 +10,11 @@ export default function SelectCharacter() {
     router.push('/create');
   };
 
+  // Function to navigate to the new select existing page
+  const goToSelectExisting = () => {
+    router.push('/select-existing');
+  };
+
   // Placeholder for future function to select existing character
   // const goToExisting = (characterId: string) => {
   //   router.push(`/character/${characterId}`); 
@@ -39,11 +44,10 @@ export default function SelectCharacter() {
             Create New Character
           </button>
           <button
-            disabled
-            className="btn-arcade-disabled w-72 sm:w-80 order-2 sm:order-none"
+            onClick={goToSelectExisting}
+            className="btn-arcade btn-arcade-secondary w-72 sm:w-80 order-2 sm:order-none"
           >
-            Use Existing Character
-            <span className="block text-xs">(Coming Soon)</span>
+            Select Existing Character
           </button>
         </div>
       </div>

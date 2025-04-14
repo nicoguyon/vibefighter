@@ -1,5 +1,24 @@
 /** @type {import('next').NextConfig} */
+
+// Ensure R2_PUBLIC_URL is defined
+if (!process.env.R2_PUBLIC_URL) {
+  throw new Error('Missing required environment variable: R2_PUBLIC_URL');
+}
+
+// Parse the R2 public URL to extract hostname and protocol
+const r2Url = new URL(process.env.R2_PUBLIC_URL);
+
 const nextConfig = {
+  images: {
+    remotePatterns: [
+      {
+        protocol: r2Url.protocol.replace(':', ''), // Extract protocol (e.g., 'https')
+        hostname: r2Url.hostname, // Extract hostname
+        port: r2Url.port || '', // Extract port or use empty string if default
+        pathname: '/**', // Allow any path under this hostname
+      },
+    ],
+  },
   webpack(config, { isServer, dev }) {
     // Enable experiments
     config.experiments = {
