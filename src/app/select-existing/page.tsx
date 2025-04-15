@@ -5,6 +5,7 @@ import CharacterViewer from '../character/[characterId]/CharacterViewer'; // Adj
 import Link from 'next/link';
 import Image from 'next/image';
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation'; // Import useRouter
 
 interface Character {
     id: string;
@@ -20,6 +21,7 @@ export default function SelectExistingCharacter() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
+    const router = useRouter(); // Initialize router
 
     useEffect(() => {
         async function fetchCharacters() {
@@ -77,6 +79,15 @@ export default function SelectExistingCharacter() {
 
     const closeModal = () => {
         setSelectedCharacter(null);
+    };
+
+    // Handler to navigate to the VS screen
+    const handleConfirmFighter = () => {
+        if (selectedCharacter) {
+            console.log(`Confirming fighter: ${selectedCharacter.name} (${selectedCharacter.id})`);
+            // Navigate to the VS screen (route to be created later)
+            router.push(`/vs/${selectedCharacter.id}`);
+        }
     };
 
     // Helper to determine if a character card should be disabled
@@ -176,6 +187,15 @@ export default function SelectExistingCharacter() {
                                 modelUrl={selectedCharacter.model_glb_url}
                                 nameAudioUrl={selectedCharacter.name_audio_url ?? undefined}
                             />
+                        </div>
+                        {/* Choose Fighter Button Container */}
+                        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-30">
+                            <button
+                                onClick={handleConfirmFighter}
+                                className="btn-arcade btn-arcade-primary px-8 py-3 text-lg"
+                            >
+                                Choose Fighter
+                            </button>
                         </div>
                     </div>
                 </div>
