@@ -1,8 +1,8 @@
 'use client';
 
 import React, { Suspense, useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, useGLTF, Environment, Html } from '@react-three/drei';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { OrbitControls, useGLTF, Environment, Html, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
 // Import animation functions and types from the new central location
 import { 
@@ -14,6 +14,37 @@ import {
     type InitialPoseData, 
     defaultFightStanceTargets
 } from '../../../lib/animations/clips';
+
+// --- NEW: Component to manage WebGL Context Cleanup ---
+interface WebGLContextManagerProps {
+    mixer: THREE.AnimationMixer | null;
+    onAnimationFinished: (event: AnimationFinishedEvent) => void;
+    // Pass other necessary dependencies if the cleanup effect needs them
+}
+
+function WebGLContextManager({ mixer, onAnimationFinished }: WebGLContextManagerProps) {
+    const { gl } = useThree(); // Get gl instance here, INSIDE Canvas context
+
+    useEffect(() => {
+        // Return cleanup function
+        return () => {
+            console.log("[Viewer ContextManager] Component unmounting: Cleaning up GL context.");
+            // Stop all animations and remove listeners if mixer exists (if cleanup logic moved here)
+            // if (mixer) {
+            //     mixer.stopAllAction();
+            //     mixer.removeEventListener('finished', onAnimationFinished);
+            //     console.log("[Viewer ContextManager] Cleanup: Stopped mixer and removed listener.");
+            // }
+
+            // --- Explicitly dispose of WebGL resources ---
+            console.log("[Viewer ContextManager] Cleanup: Calling gl.dispose().");
+            gl.dispose();
+        };
+    // Add gl, mixer, onAnimationFinished to dependency array
+    }, [gl, mixer, onAnimationFinished]);
+
+    return null; // This component doesn't render anything visual
+}
 
 // Specific type for the mixer 'finished' event
 interface AnimationFinishedEvent extends THREE.Event {
@@ -36,7 +67,7 @@ function Model({ url, /* setAutoRotate, */ setMixer, setInitialPose, setSkeleton
 
     useEffect(() => {
         if (scene) {
-            scene.rotation.y = -Math.PI / 2;
+            // scene.rotation.y = -Math.PI / 2; // <<< REMOVE THIS LINE: Do not modify cached scene
             const mixerInstance = new THREE.AnimationMixer(scene);
             setMixer(mixerInstance);
             let foundSkeleton: THREE.Skeleton | null = null;
@@ -117,6 +148,7 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
     const [audioPlayed, setAudioPlayed] = useState(false); // Track audio playback
     const punchIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for punch interval timer
     const stanceTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for initial stance delay timeout
+    // const { gl } = useThree(); // <<< REMOVE useThree from here
 
     const fightStanceTargets = defaultFightStanceTargets;
 
@@ -259,14 +291,36 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
         };
     }, [actionsReady, fightStanceAction, idleBreathAction, rightPunchAction, resetPoseAction]); 
 
-     // --- Global Cleanup Effect --- 
+     // --- General Cleanup Effect on Unmount ( REMOVED gl.dispose() from here) --- 
      useEffect(() => {
+         // Return cleanup function
          return () => {
-            console.log("[Viewer] Component unmounting: Final cleanup.");
-            if (stanceTimeoutRef.current) clearTimeout(stanceTimeoutRef.current);
+            // console.log("[Viewer] Component unmounting: Cleaning up timeouts, listeners, and GL context.");
+            console.log("[Viewer] Component unmounting: Cleaning up timeouts and listeners.");
+            // Clear any pending timeouts (like punchTimerRef, stanceTimeoutRef)
             if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
-         }
-     }, []); 
+            if (stanceTimeoutRef.current) clearTimeout(stanceTimeoutRef.current);
+            
+            // Stop all animations and remove listeners if mixer exists
+            if (mixer) {
+                mixer.stopAllAction();
+                mixer.removeEventListener('finished', onAnimationFinished);
+                console.log("[Viewer] Cleanup: Stopped mixer and removed listener.");
+            }
+
+            // --- Explicitly dispose of WebGL resources (MOVED to ContextManager) ---
+            // console.log("[Viewer] Cleanup: Calling gl.dispose().");
+            // gl.dispose(); 
+
+            // --- Keep existing logs for reference ---
+            // console.log("[Viewer] Removing 'finished' listener from mixer.");
+            // console.log("[Viewer] Cleaning up initial stance trigger effect...");
+            // console.log("[Viewer] Cleared pending stance timeout.");
+            // console.log("[Viewer] Component unmounting: Final cleanup.");
+        };
+    // Remove gl from dependency array
+    // }, [mixer, onAnimationFinished, gl]); 
+    }, [mixer, onAnimationFinished]); 
 
     return (
         <>
@@ -275,7 +329,7 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
                 {/* Buttons are removed */}
                  
                  {/* Canvas setup */}
-                <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >
+                <Canvas camera={{ position: [1.8, 0.5, 0], fov: 60 }} shadows >
                      <ambientLight intensity={0.7} />
                      <directionalLight 
                         position={[5, 10, 5]} 
@@ -289,6 +343,8 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
                          {/* Pass setAutoRotate is removed */}
                          <Model url={modelUrl} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
                          <AnimationRunner mixer={mixer} />
+                         {/* Add the context manager INSIDE the canvas */}
+                         <WebGLContextManager mixer={mixer} onAnimationFinished={onAnimationFinished} />
                      </Suspense>
                      {/* OrbitControls always auto-rotates, removed onChange handler */}
                      <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} autoRotate={true} autoRotateSpeed={1.5} target={[0, 0.5, 0]} />

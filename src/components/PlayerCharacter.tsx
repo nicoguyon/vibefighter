@@ -41,6 +41,7 @@ interface PlayerCharacterProps {
     initialFacing: 'left' | 'right';
     isPlayerControlled: boolean;
     forceBlock?: boolean;
+    canStartAnimation: boolean;
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -70,7 +71,8 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     initialPosition,
     initialFacing, 
     isPlayerControlled, 
-    forceBlock = false
+    forceBlock = false,
+    canStartAnimation
 }, ref) => {
     // --- Refs ---
     const groupRef = useRef<THREE.Group>(null);
@@ -93,6 +95,16 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     const hasHitGround = useRef(false);
     const isInStance = useRef(false);
     const isActionInProgress = useRef(false); // General flag for non-idle/walk actions
+
+    // --- NEW: Effect to synchronize positionRef with prop ---
+    useEffect(() => {
+        console.log(`[PlayerCharacter ${initialFacing}] initialPosition prop updated:`, initialPosition);
+        positionRef.current.set(...initialPosition);
+        console.log(`[PlayerCharacter ${initialFacing}] positionRef updated to:`, positionRef.current);
+        // Reset ground/velocity state when position changes drastically (like on navigation)
+        hasHitGround.current = false;
+        manualVelocityRef.current = { x: 0, y: 0, z: 0 };
+    }, [initialPosition]); // Add initialPosition to dependency array
 
     useImperativeHandle(ref, () => ({ 
         getMainGroup: () => groupRef.current,
@@ -239,6 +251,16 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
     // --- Configure Animation Actions ---
     useEffect(() => {
+         // --- Add check for animation start signal --- 
+         if (!canStartAnimation) {
+             console.log("[PlayerCharacter Anims] Waiting for canStartAnimation signal...");
+             // Optionally stop/reset actions if signal becomes false later?
+             // actions?.IdleBreath?.stop(); 
+             return; // Don't configure or play if not allowed yet
+         }
+
+         console.log("[PlayerCharacter Anims] canStartAnimation is true. Configuring actions.");
+
          if (actions?.WalkCycle) actions.WalkCycle.setLoop(THREE.LoopRepeat, Infinity);
          if (actions?.GoToFightStance) { actions.GoToFightStance.setLoop(THREE.LoopOnce, 1); actions.GoToFightStance.clampWhenFinished = true; }
          if (actions?.IdleBreath) actions.IdleBreath.setLoop(THREE.LoopRepeat, Infinity);
@@ -253,13 +275,17 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             actions.DuckKick.clampWhenFinished = true;
          }
 
-        // Initial Idle play
-        if (actions?.IdleBreath && !isInStance.current) {
+         if (mixer) mixer.timeScale = 1;
+
+         // Initial Idle play (Remove setTimeout)
+         if (actions?.IdleBreath && !isInStance.current) {
+            console.log("[PlayerCharacter Anims] Playing initial IdleBreath NOW.");
             actions.IdleBreath.reset().fadeIn(0.2).play();
             isInStance.current = true;
-        }
-         if (mixer) mixer.timeScale = 1;
-    }, [actions, mixer]);
+            // Cleanup function is no longer needed for a timeout here
+            // return () => { ... };
+         }
+    }, [actions, mixer, canStartAnimation]); // Add canStartAnimation to dependency array
 
     // --- Mixer Finished Listener --- 
     useEffect(() => {

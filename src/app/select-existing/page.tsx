@@ -85,8 +85,12 @@ export default function SelectExistingCharacter() {
     const handleConfirmFighter = () => {
         if (selectedCharacter) {
             console.log(`Confirming fighter: ${selectedCharacter.name} (${selectedCharacter.id})`);
-            // Navigate to the VS screen (route to be created later)
-            router.push(`/vs/${selectedCharacter.id}`);
+            const targetUrl = `/vs/${selectedCharacter.id}`;
+            // Introduce a small delay before navigating
+            setTimeout(() => {
+                 console.log(`Navigating to VS screen: ${targetUrl}`);
+                 router.push(targetUrl);
+            }, 100); // 100ms delay - adjust if needed
         }
     };
 

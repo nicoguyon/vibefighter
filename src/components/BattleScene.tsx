@@ -33,6 +33,7 @@ const MAX_HEALTH = 1000; // Define max health
 const PUNCH_DAMAGE = 10; // Damage per hit
 const BLOCK_DAMAGE_MULTIPLIER = 0.1; // 10% damage when blocking
 const HIT_DISTANCE = CHARACTER_RADIUS * 2 + 0.3; // Distance threshold for a hit (cylinders touching + small buffer)
+const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position check
 // Re-introduce FLOOR_TEXTURE_REPEAT (or define if removed)
 const FLOOR_TEXTURE_REPEAT = 8; 
 
@@ -129,8 +130,15 @@ const SceneContent = memo(function SceneContent({
     const controlsRef = useRef<any>(null);
     const { scene } = useThree(); // Get scene object
     const { setPlayer1Health, setPlayer2Health } = useBattleState();
-    const frameCountRef = useRef(0); // Add frame counter ref
+    // const frameCountRef = useRef(0); // Remove frame counter ref
     
+    // --- NEW: State for player readiness ---
+    // const [player1Ready, setPlayer1Ready] = useState(false); // Remove readiness state
+    // const [player2Ready, setPlayer2Ready] = useState(false);
+    const [p1InitialRotationSet, setP1InitialRotationSet] = useState(false); // Use state
+    const [p2InitialRotationSet, setP2InitialRotationSet] = useState(false); // Use state
+    const dynamicRotationHasRun = useRef(false); // Ref to log dynamic rotation once
+
     // State for manually loaded textures
     const [loadedBackgroundTexture, setLoadedBackgroundTexture] = useState<THREE.Texture | null>(null);
     const [loadedFloorTexture, setLoadedFloorTexture] = useState<THREE.Texture | null>(null); // State for floor texture
@@ -210,7 +218,17 @@ const SceneContent = memo(function SceneContent({
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
 
-        frameCountRef.current++; // Increment frame count
+        // frameCountRef.current++; // Remove frame count increment
+
+        // --- Check player readiness --- 
+        // if (!player1Ready && player1Ref.current?.getIsReady()) { // Remove readiness checks
+        //     setPlayer1Ready(true);
+        //     console.log("[SceneContent useFrame] Player 1 is ready.");
+        // }
+        // if (!player2Ready && player2Ref.current?.getIsReady()) {
+        //     setPlayer2Ready(true);
+        //     console.log("[SceneContent useFrame] Player 2 is ready.");
+        // }
 
         // Boundary clamping & Ground level
         if (p1Group) {
@@ -227,18 +245,50 @@ const SceneContent = memo(function SceneContent({
             const p2Wrapper = player2Ref.current!.getModelWrapper();
             if (!p1Wrapper || !p2Wrapper) return;
 
-            // Make Characters Face Each Other (Only after a few frames)
-            if (frameCountRef.current > 5) { // Add condition
-                const angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
-                // --- DEBUG LOGGING for Rotation ---
-                // if (player1Ref.current) { // Check ref exists
-                //     console.log(`[useFrame Rot] P1 Pos: ${p1Group.position.x.toFixed(2)}, P2 Pos: ${p2Group.position.x.toFixed(2)}`);
-                //     console.log(`[useFrame Rot] Setting P1 RotY to: ${(angleP1 - Math.PI / 2).toFixed(2)} (Current: ${p1Wrapper.rotation.y.toFixed(2)})`);
-                // }
-                // --- END DEBUG LOGGING ---
-                p1Wrapper.rotation.y = angleP1 - Math.PI / 2;
-                const angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
-                p2Wrapper.rotation.y = angleP2 - Math.PI / 2;
+            // --- Set Initial Rotation Once --- 
+            if (!p1InitialRotationSet && player1Ref.current) { // Check state
+                 if (p1Wrapper) {
+                    console.log(`[SceneContent useFrame BEFORE Initial Rot P1] Wrapper Y Rot: ${p1Wrapper.rotation.y.toFixed(3)}`); // Log before
+                    p1Wrapper.rotation.y = 0; // P1 starts left, faces right
+                    // p1InitialRotationSet.current = true;
+                    setP1InitialRotationSet(true); // Set state
+                    console.log(`[SceneContent useFrame AFTER Initial Rot P1] Wrapper Y Rot: ${p1Wrapper.rotation.y.toFixed(3)}, State Set: true`); // Log after
+                 }
+            }
+            if (!p2InitialRotationSet && player2Ref.current) { // Check state
+                 if (p2Wrapper) {
+                    console.log(`[SceneContent useFrame BEFORE Initial Rot P2] Wrapper Y Rot: ${p2Wrapper.rotation.y.toFixed(3)}`); // Log before
+                    p2Wrapper.rotation.y = Math.PI; // P2 starts right, faces left
+                    // p2InitialRotationSet.current = true;
+                    setP2InitialRotationSet(true); // Set state
+                    console.log(`[SceneContent useFrame AFTER Initial Rot P2] Wrapper Y Rot: ${p2Wrapper.rotation.y.toFixed(3)}, State Set: true`); // Log after
+                 }
+            }
+
+            // Make Characters Face Each Other (Only if BOTH initial rotations are set)
+            let angleP1: number, angleP2: number; // Declare angles outside
+
+            // if (player1Ready && player2Ready) { // Check rotation refs instead
+            if (p1InitialRotationSet && p2InitialRotationSet) {
+                 // Apply dynamic facing ONLY if both players have had initial rotation set
+                angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
+                angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
+
+                const targetP1Rotation = angleP1 - Math.PI / 2; // Calculate target rotation
+                const targetP2Rotation = angleP2 - Math.PI / 2;
+
+                // --- Log first dynamic calculation --- 
+                if (!dynamicRotationHasRun.current) {
+                    console.log(`[SceneContent First Dynamic Rot] P1 PosX: ${p1Group?.position.x.toFixed(3)}, P2 PosX: ${p2Group?.position.x.toFixed(3)}`);
+                    console.log(`[SceneContent First Dynamic Rot] Calc Angle P1: ${angleP1.toFixed(3)}, Calc Angle P2: ${angleP2.toFixed(3)}`);
+                    // Log the target rotation that WILL be applied
+                    console.log(`[SceneContent First Dynamic Rot] Target Dyn Rot P1: ${targetP1Rotation.toFixed(3)}, Target Dyn Rot P2: ${targetP2Rotation.toFixed(3)}`);
+                    dynamicRotationHasRun.current = true;
+                }
+
+                p1Wrapper.rotation.y = targetP1Rotation;
+                p2Wrapper.rotation.y = targetP2Rotation;
+                 // console.log(`[useFrame Dyn Rot] P1 Ready: ${player1Ready}, P2 Ready: ${player2Ready} => Dynamic rot applied`);
             }
 
             // Collision
@@ -324,6 +374,7 @@ const SceneContent = memo(function SceneContent({
                 initialPosition={PLAYER1_START_POS}
                 initialFacing="right"
                 isPlayerControlled={true}
+                canStartAnimation={p1InitialRotationSet && p2InitialRotationSet} // Use state variables
             />
             <PlayerCharacter
                 ref={player2Ref}
@@ -332,6 +383,7 @@ const SceneContent = memo(function SceneContent({
                 initialFacing="left"
                 isPlayerControlled={false}
                 forceBlock={isP2Blocking}
+                canStartAnimation={p1InitialRotationSet && p2InitialRotationSet} // Use state variables
             />
             
             {/* Ground Plane */}
