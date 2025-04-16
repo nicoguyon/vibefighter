@@ -20,6 +20,16 @@ import {
     // type EulerOrder // Not directly needed here
 } from '../lib/animations/clips';
 
+// --- NEW: Define Input State Type ---
+export type InputState = {
+    left: boolean;
+    right: boolean;
+    punch: boolean;
+    duck: boolean;
+    block: boolean;
+    jump: boolean;
+};
+
 // Export the handle type directly here
 export interface PlayerCharacterHandle {
     getMainGroup: () => THREE.Group | null;
@@ -35,13 +45,13 @@ export interface PlayerCharacterHandle {
 }
 
 // --- Types ---
-interface PlayerCharacterProps { 
+interface PlayerCharacterProps {
     modelUrl: string;
     initialPosition: [number, number, number];
     initialFacing: 'left' | 'right';
     isPlayerControlled: boolean;
-    forceBlock?: boolean;
     canStartAnimation: boolean;
+    externalInput?: React.RefObject<InputState>; // ADDED: Optional external input source
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -53,7 +63,7 @@ interface AnimationFinishedEvent extends THREE.Event {
 // --- Constants ---
 const CHARACTER_WALK_SPEED = 2;
 const GRAVITY = 9.81 * 2;
-const JUMP_FORCE = 6;
+const JUMP_FORCE = 7;
 const JUMP_HORIZONTAL_SPEED = 1.8; // Speed for forward/backward jumps
 const GROUND_LEVEL = 0;
 // Debug Collider Visuals (Adjusted Size)
@@ -71,8 +81,8 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     initialPosition,
     initialFacing, 
     isPlayerControlled, 
-    forceBlock = false,
-    canStartAnimation
+    canStartAnimation,
+    externalInput
 }, ref) => {
     // --- Refs ---
     const groupRef = useRef<THREE.Group>(null);
@@ -130,14 +140,14 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     }), [isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef]);
 
     // --- State ---
-    const [pressedKeys, setPressedKeys] = useState<{ 
-        left: boolean; 
-        right: boolean; 
-        punch: boolean; // Space
-        duck: boolean;  // ArrowDown
-        block: boolean;
-        jump: boolean; // Added jump state
-    }>({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
+    const [pressedKeys, setPressedKeys] = useState<InputState>({
+        left: false,
+        right: false,
+        punch: false,
+        duck: false,
+        block: false,
+        jump: false,
+    });
     const [isLoaded, setIsLoaded] = useState(false);
     const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({});
 
@@ -176,7 +186,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
     // --- Input Handling ---
     useEffect(() => {
-        if (!isPlayerControlled) return;
+        // Only attach listeners if player controlled AND no external input source is provided
+        if (!isPlayerControlled || externalInput) return;
+
          const handleKeyDown = (event: KeyboardEvent) => {
              switch (event.key) {
                  case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: true })); break;
@@ -203,7 +215,15 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
         };
-    }, [isPlayerControlled]);
+    }, [isPlayerControlled, externalInput]);
+
+    // --- Helper to get the current effective input state ---
+    const getEffectiveInputState = useCallback((): InputState => {
+        if (externalInput?.current) {
+            return externalInput.current;
+        }
+        return pressedKeys;
+    }, [externalInput, pressedKeys]);
 
     // --- Create Animation Clips ---
     const walkCycleClip = useMemo(() => {
@@ -321,8 +341,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
     // --- Effect to Handle Action Triggers --- 
     useEffect(() => {
-        const shouldBeBlocking = !isPlayerControlled ? forceBlock : pressedKeys.block;
-        const shouldBeDucking = pressedKeys.duck;
+        // Determine effective input state for this frame
+        const currentInput = getEffectiveInputState();
+
+        // Use currentInput instead of pressedKeys or forceBlock
+        const shouldBeBlocking = currentInput.block;
+        const shouldBeDucking = currentInput.duck;
         
         const idleAction = actions?.IdleBreath;
         const walkAction = actions?.WalkCycle;
@@ -366,7 +390,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         }
 
         // --- Punch/Kick --- 
-        else if (pressedKeys.punch && !isActionInProgress.current && !isBlockingRef.current) { // Check punch trigger, ignore if blocking
+        else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) { // Check punch trigger, ignore if blocking
             if (isDuckingRef.current && kickAction) { // Trigger Duck Kick
                  triggerKick();
             } else if (!isDuckingRef.current && punchAction) { // Trigger Normal Punch
@@ -374,7 +398,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             }
         }
 
-    }, [pressedKeys, forceBlock, actions, isInStance, isPlayerControlled, isDuckingRef, isBlockingRef, isActionInProgress]);
+    }, [actions, isInStance, isActionInProgress, getEffectiveInputState]);
 
     // --- Helper Action Triggers --- 
     const triggerDuck = useCallback(() => {
@@ -440,14 +464,20 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         const currentPos = positionRef.current;
         const velocity = manualVelocityRef.current;
+        const currentInput = getEffectiveInputState(); // Get effective input state for movement
 
         // --- Horizontal Movement (Only applies when grounded) ---
         let targetVelocityX = 0;
         const isGrounded = hasHitGround.current && currentPos.y <= GROUND_LEVEL;
 
-        if (isPlayerControlled && !isActionInProgress.current && isGrounded) { 
-             if (pressedKeys.left || pressedKeys.right) {
-                targetVelocityX = pressedKeys.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
+        // Use currentInput for movement checks
+        if (!externalInput && isPlayerControlled && !isActionInProgress.current && isGrounded) {
+             if (currentInput.left || currentInput.right) {
+                targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
+            }
+        } else if (externalInput && !isActionInProgress.current && isGrounded) { // AI controlled movement
+             if (currentInput.left || currentInput.right) {
+                targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
             }
         }
         // Apply ground velocity if grounded, otherwise keep existing air velocity
@@ -462,18 +492,21 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         // }
         // --- END DEBUG LOGGING ---
 
-        // Apply Jump Force + Horizontal Jump Velocity
-        if (isPlayerControlled && pressedKeys.jump && isGrounded && !isActionInProgress.current) {
+        // Apply Jump Force + Horizontal Jump Velocity - Use currentInput
+        if ((isPlayerControlled || externalInput) && currentInput.jump && isGrounded && !isActionInProgress.current) {
             velocity.y = JUMP_FORCE;
             // Apply horizontal jump speed based on keys pressed *at the moment of jump*
-            if (pressedKeys.left) {
+            if (currentInput.left) {
                 velocity.x = -JUMP_HORIZONTAL_SPEED;
-            } else if (pressedKeys.right) {
+            } else if (currentInput.right) {
                 velocity.x = JUMP_HORIZONTAL_SPEED;
             } else {
                 velocity.x = 0; // Neutral jump
             }
-             console.log(`---> P1 JUMPING! VelX: ${velocity.x.toFixed(2)}, VelY: ${velocity.y.toFixed(2)}`);
+            // Only log if player controlled to avoid AI spam
+            if (isPlayerControlled) { 
+                 console.log(`---> P1 JUMPING! VelX: ${velocity.x.toFixed(2)}, VelY: ${velocity.y.toFixed(2)}`);
+            }
         }
         
         // Apply gravity ONLY if airborne (or starting a jump)
@@ -505,7 +538,8 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         // --- Animation Control (Walk/Idle Trigger) ---
         const isCurrentlyMovingHorizontallyOnGround = isGrounded && targetVelocityX !== 0;
         // Check grounded state before triggering walk/idle
-        if (isPlayerControlled && !isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
+        // Use currentInput in condition checks if needed, but targetVelocityX already reflects input
+        if ((isPlayerControlled || externalInput) && !isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
             const walkAction = actions?.WalkCycle;
             const idleAction = actions?.IdleBreath;
             if (isCurrentlyMovingHorizontallyOnGround) {
@@ -530,6 +564,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             </group>
             <mesh position={[0, DEBUG_CYLINDER_HEIGHT / 2, 0]} visible={false}>
                 <cylinderGeometry args={[DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_HEIGHT, 16]} />
+                {/* Use isPlayerControlled to determine color, external input doesn't change this fundamental property */}
                 <meshStandardMaterial color={isPlayerControlled ? "blue" : "red"} wireframe transparent opacity={0.5} />
             </mesh>
         </group>

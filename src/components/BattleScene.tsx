@@ -6,8 +6,9 @@ import * as THREE from 'three';
 // Import from @react-three/cannon
 // Uncomment PlayerCharacter
 // Ensure PlayerCharacterHandle is imported correctly and not defined locally
-import { PlayerCharacter, PlayerCharacterHandle } from './PlayerCharacter'; 
+import { PlayerCharacter, PlayerCharacterHandle, InputState } from './PlayerCharacter'; // Import InputState
 import HealthBar from './HealthBar'; // Import the HealthBar component
+import { AIController } from './AIController'; // Import AIController
 
 // Define stage boundaries
 const MIN_X = -8;
@@ -36,6 +37,7 @@ const HIT_DISTANCE = CHARACTER_RADIUS * 2 + 0.3; // Distance threshold for a hit
 const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position check
 // Re-introduce FLOOR_TEXTURE_REPEAT (or define if removed)
 const FLOOR_TEXTURE_REPEAT = 8; 
+const VERTICAL_COLLISION_THRESHOLD = 0.5; // Allow jumping over if Y difference > this
 
 // REMOVED Local definition of PlayerCharacterHandle
 // export interface PlayerCharacterHandle {
@@ -111,22 +113,27 @@ function useBattleState() {
 interface SceneContentProps {
     player1ModelUrl: string;
     player2ModelUrl: string;
-    isP2Blocking: boolean;
+    isAIActive: boolean; // ADDED
     backgroundImageUrl: string; // Add background URL prop
     // Add floorTextureUrl prop back
     floorTextureUrl: string;    
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
-const SceneContent = memo(function SceneContent({ 
+const SceneContent: React.FC<SceneContentProps> = memo(({ 
     player1ModelUrl, 
     player2ModelUrl, 
-    isP2Blocking, 
+    isAIActive, // ADDED
     backgroundImageUrl, 
     floorTextureUrl // Add prop back to destructuring
-}: SceneContentProps) {
+}: SceneContentProps) => {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
+    // --- NEW: Ref for AI's simulated input state --- 
+    const aiInputRef = useRef<InputState>({ 
+        left: false, right: false, punch: false, 
+        duck: false, block: false, jump: false 
+    });
     const controlsRef = useRef<any>(null);
     const { scene } = useThree(); // Get scene object
     const { setPlayer1Health, setPlayer2Health } = useBattleState();
@@ -265,12 +272,15 @@ const SceneContent = memo(function SceneContent({
                  }
             }
 
-            // Make Characters Face Each Other (Only if BOTH initial rotations are set)
-            let angleP1: number, angleP2: number; // Declare angles outside
+            // --- START GATED LOGIC --- 
+            // Only proceed with collision, facing, camera, and hit detection updates if 
+            // both players have landed and initial rotations are done.
+            const playersReadyForInteraction = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround() && p1InitialRotationSet && p2InitialRotationSet;
 
-            // if (player1Ready && player2Ready) { // Check rotation refs instead
-            if (p1InitialRotationSet && p2InitialRotationSet) {
-                 // Apply dynamic facing ONLY if both players have had initial rotation set
+            if (playersReadyForInteraction) {
+
+                // Make Characters Face Each Other 
+                let angleP1: number, angleP2: number; 
                 angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
                 angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
 
@@ -289,58 +299,70 @@ const SceneContent = memo(function SceneContent({
                 p1Wrapper.rotation.y = targetP1Rotation;
                 p2Wrapper.rotation.y = targetP2Rotation;
                  // console.log(`[useFrame Dyn Rot] P1 Ready: ${player1Ready}, P2 Ready: ${player2Ready} => Dynamic rot applied`);
-            }
+            
 
-            // Collision
-            const distX = Math.abs(p1Group.position.x - p2Group.position.x);
-            if (player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround() && distX < MIN_SEPARATION) {
-                player1Ref.current!.resetVelocityX();
-                player2Ref.current!.resetVelocityX();
-                const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
-                const directionP1 = Math.sign(p1Group.position.x - p2Group.position.x);
-                const correctedP1X = midPointX + (directionP1 * MIN_SEPARATION / 2);
-                const correctedP2X = midPointX - (directionP1 * MIN_SEPARATION / 2);
-                player1Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP1X, MIN_X, MAX_X));
-                player2Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP2X, MIN_X, MAX_X));
-            }
-
-            // Dynamic Camera
-            const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + distX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
-            if (controlsRef.current) {
-                const controlledCamera = controlsRef.current.object;
-                controlledCamera.position.z = THREE.MathUtils.lerp(controlledCamera.position.z, targetZ, LERP_FACTOR);
-                controlsRef.current.update();
-            }
-
-            // --- Hit Detection & Damage (with Blocking) --- 
-            const p1 = player1Ref.current;
-            const p2 = player2Ref.current;
-
-            if (p1 && p2) {
-                const p1Attacking = p1.isAttacking();
-                const p2Attacking = p2.isAttacking();
-                const p1Blocking = p1.isBlocking(); 
-                const p2Blocking = p2.isBlocking(); 
-                
-                // Player 1 attacking Player 2
-                if (p1Attacking && distX < HIT_DISTANCE && p1.getCanDamage()) {
-                    const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                    console.log(`HIT: P1 -> P2 ${p2Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
-                    p1.confirmHit(); 
-                    setPlayer2Health(h => Math.max(0, h - damage));
+                // Collision
+                const distX = Math.abs(p1Group.position.x - p2Group.position.x);
+                const distY = Math.abs(p1Group.position.y - p2Group.position.y); // Calculate Y distance again
+                // if (player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround() && distX < MIN_SEPARATION) { // Original check (Reverted again)
+                // Condition check moved outside to the 'playersReadyForInteraction' check
+                // Re-introduce vertical check *inside* the interaction gate
+                if (distX < MIN_SEPARATION && distY < VERTICAL_COLLISION_THRESHOLD) { 
+                    // console.log(`[Collision] Applying correction. distX: ${distX.toFixed(2)}, distY: ${distY.toFixed(2)}`);
+                    player1Ref.current!.resetVelocityX();
+                    player2Ref.current!.resetVelocityX();
+                    const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
+                    const directionP1 = Math.sign(p1Group.position.x - p2Group.position.x);
+                    const correctedP1X = midPointX + (directionP1 * MIN_SEPARATION / 2);
+                    const correctedP2X = midPointX - (directionP1 * MIN_SEPARATION / 2);
+                    player1Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP1X, MIN_X, MAX_X));
+                    player2Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP2X, MIN_X, MAX_X));
                 }
 
-                // Player 2 attacking Player 1
-                if (p2Attacking && distX < HIT_DISTANCE && p2.getCanDamage()) {
-                    const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                    console.log(`HIT: P2 -> P1 ${p1Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
-                    p2.confirmHit();
-                    setPlayer1Health(h => Math.max(0, h - damage));
+                // Dynamic Camera
+                const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + distX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
+                if (camera) { // Check if camera exists from useFrame state
+                    const midPointX = (p1Group.position.x + p2Group.position.x) / 2; // Calculate midpoint
+                    camera.position.x = THREE.MathUtils.lerp(camera.position.x, midPointX, LERP_FACTOR); 
+                    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, LERP_FACTOR);
+                    camera.lookAt(midPointX, CAM_LOOKAT_Y, 0); 
+                    camera.updateProjectionMatrix(); 
                 }
-            }
-        }
+
+                // --- Hit Detection & Damage (with Blocking) --- 
+                const p1 = player1Ref.current;
+                const p2 = player2Ref.current;
+
+                if (p1 && p2) {
+                    const p1Attacking = p1.isAttacking();
+                    const p2Attacking = p2.isAttacking();
+                    const p1Blocking = p1.isBlocking(); 
+                    const p2Blocking = p2.isBlocking(); 
+                    
+                    // Player 1 attacking Player 2
+                    if (p1Attacking && distX < HIT_DISTANCE && p1.getCanDamage()) {
+                        const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
+                        console.log(`HIT: P1 -> P2 ${p2Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
+                        p1.confirmHit(); 
+                        setPlayer2Health(h => Math.max(0, h - damage));
+                    }
+
+                    // Player 2 attacking Player 1
+                    if (p2Attacking && distX < HIT_DISTANCE && p2.getCanDamage()) {
+                        const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
+                        console.log(`HIT: P2 -> P1 ${p1Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
+                        p2.confirmHit();
+                        setPlayer1Health(h => Math.max(0, h - damage));
+                    }
+                }
+
+            } // End: if (playersReadyForInteraction)
+            // --- END GATED LOGIC ---
+
+        } // End: if (p1Group && p2Group)
     });
 
+    // Ensure the component returns JSX
     return (
         <Suspense fallback={null}> 
              {/* Fallback background color (can keep or remove) */}
@@ -382,8 +404,16 @@ const SceneContent = memo(function SceneContent({
                 initialPosition={PLAYER2_START_POS}
                 initialFacing="left"
                 isPlayerControlled={false}
-                forceBlock={isP2Blocking}
+                externalInput={aiInputRef} // ADDED: Pass AI input ref
                 canStartAnimation={p1InitialRotationSet && p2InitialRotationSet} // Use state variables
+            />
+            
+            {/* Render AI Controller */}
+            <AIController 
+                playerRef={player2Ref} 
+                opponentRef={player1Ref} 
+                isActive={isAIActive} 
+                aiInputRef={aiInputRef} // Pass the AI input state ref 
             />
             
             {/* Ground Plane */}
@@ -407,7 +437,7 @@ const SceneContent = memo(function SceneContent({
             <directionalLight position={[-10, 10, -5]} intensity={0.5} />
         </Suspense>
     );
-}); // Close memo wrapper
+}); // Close memo wrapper new position
 
 // --- BattleScene Component (Exported - Manages State & Renders Canvas + UI) ---
 export function BattleScene({ 
@@ -420,11 +450,12 @@ export function BattleScene({
 }: BattleSceneProps) {
     const [player1Health, setPlayer1Health] = useState(MAX_HEALTH);
     const [player2Health, setPlayer2Health] = useState(MAX_HEALTH);
-    const [isP2Blocking, setIsP2Blocking] = useState(false); 
+    const [isAIActive, setIsAIActive] = useState(true); // ADDED AI active state
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
 
-    const toggleP2Block = () => setIsP2Blocking(prev => !prev); // Debug func
+    // ADDED Debug func for AI
+    const toggleAI = () => setIsAIActive((prev: boolean) => !prev); // Add type for prev
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>
@@ -438,7 +469,7 @@ export function BattleScene({
                     <SceneContent
                         player1ModelUrl={player1ModelUrl}
                         player2ModelUrl={player2ModelUrl}
-                        isP2Blocking={isP2Blocking}
+                        isAIActive={isAIActive} // ADDED
                         backgroundImageUrl={backgroundImageUrl}
                         floorTextureUrl={floorTextureUrl} // Pass prop down
                     />
@@ -454,9 +485,13 @@ export function BattleScene({
                     <HealthBar name={player1Name} currentHealth={player1Health} maxHealth={MAX_HEALTH} alignment="left" style={{ position: 'relative' }} />
                     <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} />
                 </div>
-                 {/* Optional Debug Button 
-                 <button onClick={toggleP2Block} style={{position: 'absolute', bottom: '10px', left: '10px', zIndex: 3, pointerEvents: 'all'}}>Toggle P2 Block</button> 
-                 */} 
+                 {/* Optional Debug Button - Changed to toggle AI */}
+                 <button 
+                     onClick={toggleAI} 
+                     style={{position: 'absolute', bottom: '10px', left: '10px', zIndex: 3, pointerEvents: 'all'}}
+                 >
+                     Toggle AI ({isAIActive ? 'ON' : 'OFF'})
+                 </button> 
             </>
         </BattleStateContext.Provider>
     );
