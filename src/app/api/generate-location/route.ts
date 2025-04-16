@@ -290,7 +290,8 @@ export async function POST(req: NextRequest) {
         console.log("Successfully saved location to Supabase:", dbData?.id);
 
         // === 9. Return Response ===
-        return NextResponse.json({ locationImageUrl: backgroundR2Url }, { status: 200 });
+        // Return the main background URL and the new location ID
+        return NextResponse.json({ locationImageUrl: backgroundR2Url, locationId: locationId }, { status: 200 });
 
     } catch (error: any) {
         console.error('[API generate-location Error]:', error);

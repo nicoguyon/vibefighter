@@ -15,6 +15,14 @@ interface Character {
     status: string | null; // Ensure we only pick 'complete' opponents
 }
 
+// --- NEW: Define Location Interface ---
+interface Location {
+    id: string;
+    name: string | null; // Use the name column
+    background_image_url: string | null; // Correct column name
+    created_at: string;
+}
+
 // Helper to add R2 prefix if needed
 const ensureAbsoluteUrl = (url: string | null): string | null => {
     if (url && !url.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
@@ -36,12 +44,20 @@ export default function VsPage() {
     const [error, setError] = useState<string | null>(null);
     const [isAnimating, setIsAnimating] = useState(false);
 
-    // --- New State for Location Modal ---
+    // --- Location Modal State ---
     const [showLocationModal, setShowLocationModal] = useState(false);
     const [locationPrompt, setLocationPrompt] = useState("");
     const [isGeneratingLocation, setIsGeneratingLocation] = useState(false);
     const [generatedLocationUrl, setGeneratedLocationUrl] = useState<string | null>(null);
     const [locationGenerationError, setLocationGenerationError] = useState<string | null>(null);
+    const [confirmedLocationId, setConfirmedLocationId] = useState<string | null>(null); // Used for both generated and selected
+
+    // --- NEW State for Existing Locations ---
+    const [existingLocations, setExistingLocations] = useState<Location[]>([]);
+    const [isLoadingLocations, setIsLoadingLocations] = useState(false);
+    const [locationFetchError, setLocationFetchError] = useState<string | null>(null);
+    const [modalView, setModalView] = useState<'generate' | 'select'>('select'); // Default to 'select'
+    const [selectedExistingLocation, setSelectedExistingLocation] = useState<Location | null>(null); // Track visual selection
 
     const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const opponentAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -180,6 +196,41 @@ export default function VsPage() {
          }
      }, [finalOpponent]);
 
+    // --- NEW: Function to Fetch Existing Locations ---
+    const fetchExistingLocations = async () => {
+        console.log("Fetching existing locations...");
+        setIsLoadingLocations(true);
+        setLocationFetchError(null);
+        setExistingLocations([]); // Clear previous
+
+        try {
+            const { data, error } = await supabase
+                .from('locations') // Assuming your table is named 'locations'
+                .select('id, name, background_image_url, created_at') // Fetch correct image column
+                .order('created_at', { ascending: false }) // Show newest first
+                .limit(20); // Limit results for performance
+
+            if (error) {
+                throw new Error(error.message);
+            }
+
+            if (data) {
+                const processedLocations = data.map(loc => ({
+                    ...loc,
+                    background_image_url: ensureAbsoluteUrl(loc.background_image_url) // Ensure URLs are absolute
+                })).filter(loc => loc.background_image_url); // Filter based on correct column
+
+                console.log(`Fetched ${processedLocations.length} existing locations.`);
+                setExistingLocations(processedLocations as Location[]); // Cast needed if Supabase types aren't precise
+            }
+        } catch (err: any) {
+            console.error("Error fetching existing locations:", err);
+            setLocationFetchError(err.message || 'Failed to load existing locations.');
+        } finally {
+            setIsLoadingLocations(false);
+        }
+    };
+
      // 4. Handle Reroll
      const handleReroll = () => {
          console.log("Rerolling opponent...");
@@ -204,12 +255,17 @@ export default function VsPage() {
         // Reset previous generation state when opening
         setGeneratedLocationUrl(null);
         setLocationGenerationError(null);
-        setLocationPrompt(""); // Optionally clear prompt
+        setLocationPrompt("");
+        setConfirmedLocationId(null); // Clear confirmation on open
+        setSelectedExistingLocation(null); // Clear visual selection
+        setModalView('select'); // Start in select view
+        fetchExistingLocations(); // Fetch locations when modal opens
     };
 
     const handleCloseLocationModal = () => {
         setShowLocationModal(false);
         // Optionally reset state when closing completely
+        // Don't reset generatedLocationUrl here, user might want to see it before confirming
         // setLocationPrompt("");
         // setGeneratedLocationUrl(null);
         // setLocationGenerationError(null);
@@ -242,12 +298,25 @@ export default function VsPage() {
 
             const result = await response.json();
             
-            // Assuming the API returns { locationImageUrl: "..." } 
-            if (result.locationImageUrl && typeof result.locationImageUrl === 'string') {
+            // Assuming the API returns { locationImageUrl: "...", locationId: "..." } 
+            if (result.locationImageUrl && typeof result.locationImageUrl === 'string' && result.locationId && typeof result.locationId === 'string') {
                  console.log("Generated Location URL:", result.locationImageUrl);
+                 console.log("Generated Location ID:", result.locationId);
                  setGeneratedLocationUrl(result.locationImageUrl);
+                 setConfirmedLocationId(result.locationId); // Store the ID
+                 // --- NEW: Optionally switch view and refresh locations ---
+                 const newLocation: Location = {
+                     id: result.locationId,
+                     name: locationPrompt, // Use the prompt used for generation
+                     background_image_url: result.locationImageUrl, // Map API response to correct field
+                     created_at: new Date().toISOString() // Approximate creation time
+                 };
+                 setExistingLocations(prev => [newLocation, ...prev]); // Add to beginning of list
+                 setSelectedExistingLocation(newLocation); // Auto-select the newly generated one
+                 setModalView('select'); // Switch to select view to show it
+
             } else {
-                console.error("API response missing or invalid locationImageUrl:", result);
+                console.error("API response missing or invalid locationImageUrl/locationId:", result);
                 throw new Error("Invalid response from location generation API.");
             }
            // --- End API Call Placeholder --- 
@@ -260,16 +329,40 @@ export default function VsPage() {
         }
     };
 
-    const handleConfirmLocation = () => {
-        if (!generatedLocationUrl || !chosenCharacter || !finalOpponent) return;
+    // --- NEW: Handle Selecting an Existing Location ---
+    const handleSelectExistingLocation = (location: Location) => {
+        console.log("Selected existing location:", location.id, location.name); // Use name
+        setSelectedExistingLocation(location);
+        setConfirmedLocationId(location.id);
+        setGeneratedLocationUrl(location.background_image_url); // Use correct field
+        setLocationGenerationError(null); // Clear any previous generation errors
+    };
 
-        console.log("Location Confirmed:", generatedLocationUrl);
-        console.log(`Proceeding to fight: ${chosenCharacter.name} vs ${finalOpponent.name}`);
-        alert("Fight screen not implemented yet!");
-        // Example: Navigate to the actual fight screen (replace alert)
-        // const fightUrl = `/fight/${chosenCharacter.id}/${finalOpponent.id}?location=${encodeURIComponent(generatedLocationUrl)}`;
-        // router.push(fightUrl);
-        handleCloseLocationModal(); // Close modal after confirmation
+    const handleConfirmLocation = () => {
+        // Ensure we have all IDs needed
+        if (!confirmedLocationId) { // Check if an ID is confirmed (either generated or selected)
+             // Maybe show an error message in the modal instead of alert
+            setLocationGenerationError("Please generate or select a location first.");
+            return;
+        }
+        if (!chosenCharacter?.id || !finalOpponent?.id) {
+            console.error("Missing IDs for fight navigation:", { confirmedLocationId, chosenCharacterId: chosenCharacter?.id, finalOpponentId: finalOpponent?.id });
+            // alert("Error: Cannot proceed to fight, missing required information.");
+            setLocationGenerationError("Error: Cannot proceed, missing fighter information."); // Show error in modal
+            return;
+        }
+
+        console.log("Location Confirmed ID:", confirmedLocationId);
+        console.log(`Proceeding to fight: ${chosenCharacter.name} (${chosenCharacter.id}) vs ${finalOpponent.name} (${finalOpponent.id})`);
+        
+        // Construct the fight URL with query parameters
+        const fightUrl = `/fight?char1=${encodeURIComponent(chosenCharacter.id)}&char2=${encodeURIComponent(finalOpponent.id)}&location=${encodeURIComponent(confirmedLocationId)}`;
+        
+        console.log("Navigating to:", fightUrl);
+        // Navigate to the actual fight screen (ensure /fight page exists)
+        router.push(fightUrl);
+        // handleCloseLocationModal(); // Close modal automatically on navigation
+        // handleCloseLocationModal(); // Close modal automatically? Maybe keep open until navigation occurs.
     };
 
     // --- Render Logic ---
@@ -388,78 +481,165 @@ export default function VsPage() {
 
             {/* --- Location Selection Modal --- */}
             {showLocationModal && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-                    <div className="relative bg-arcade-bg border-4 border-logo-yellow rounded-lg shadow-xl p-6 w-full max-w-xl text-arcade-white">
-                        {/* Close Button */} 
-                        <button 
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4"> {/* Increased max-w, flex-col, max-h */}
+                    <div className="relative bg-arcade-bg border-4 border-logo-yellow rounded-lg shadow-xl p-6 w-full max-w-3xl text-arcade-white flex flex-col max-h-[90vh]">
+
+                        {/* Close Button */}
+                        <button
                             onClick={handleCloseLocationModal}
-                            className="absolute top-2 right-2 text-arcade-gray hover:text-arcade-white transition duration-150 p-1 bg-arcade-dark-gray rounded-full"
+                             className="absolute top-2 right-2 text-arcade-gray hover:text-arcade-white transition duration-150 p-1 bg-arcade-dark-gray rounded-full z-10" // Ensure button is above content
                             aria-label="Close location select"
                         >
                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                         </button>
 
-                        <h2 className="text-3xl font-bold text-center mb-6 text-logo-yellow drop-shadow-[2px_2px_0_rgba(0,0,0,0.8)]">Select Location</h2>
+                        <h2 className="text-3xl font-bold text-center mb-4 text-logo-yellow drop-shadow-[2px_2px_0_rgba(0,0,0,0.8)]">Select Fight Location</h2>
 
-                        {/* Prompt Input */} 
-                        <div className="mb-4">
-                             <label htmlFor="locationPrompt" className="block text-lg font-medium mb-2 text-arcade-yellow">Describe the location:</label>
-                             <textarea 
-                                id="locationPrompt"
-                                rows={3}
-                                className="w-full p-2 bg-arcade-dark-gray border border-arcade-gray rounded focus:ring-2 focus:ring-logo-yellow focus:border-logo-yellow outline-none resize-none placeholder-arcade-gray text-base"
-                                placeholder="e.g., A mystical forest clearing at dawn, An ancient ruined temple on a mountaintop, A neon-lit cyberpunk city street at night..."
-                                value={locationPrompt}
-                                onChange={(e) => setLocationPrompt(e.target.value)}
-                                disabled={isGeneratingLocation}
-                            />
-                        </div>
-
-                        {/* Generate Button */} 
-                        <div className="text-center mb-4">
-                             <button
-                                onClick={handleGenerateLocation}
-                                disabled={isGeneratingLocation || !locationPrompt.trim()}
-                                className={`btn-arcade btn-arcade-secondary w-full sm:w-auto ${isGeneratingLocation ? 'opacity-50 cursor-wait' : ''}`}
+                        {/* --- Tabs for Generate/Select --- */}
+                        <div className="flex justify-center border-b border-arcade-gray mb-4">
+                            <button
+                                onClick={() => setModalView('select')}
+                                className={`px-4 py-2 text-lg font-medium transition-colors duration-200 ${modalView === 'select' ? 'text-logo-yellow border-b-2 border-logo-yellow' : 'text-arcade-gray hover:text-arcade-white'}`}
                             >
-                                {isGeneratingLocation ? 'Generating...' : 'Generate Location'}
+                                Select Existing
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setModalView('generate');
+                                    setSelectedExistingLocation(null);
+                                    setConfirmedLocationId(null);
+                                    setGeneratedLocationUrl(null); // Clear preview from selected
+                                    setLocationGenerationError(null); // Clear potential selection errors
+                                }}
+                                className={`px-4 py-2 text-lg font-medium transition-colors duration-200 ${modalView === 'generate' ? 'text-logo-yellow border-b-2 border-logo-yellow' : 'text-arcade-gray hover:text-arcade-white'}`}
+                            >
+                                Generate New
                             </button>
                         </div>
 
-                        {/* Results Area */} 
-                        <div className="min-h-[200px] flex flex-col items-center justify-center bg-arcade-dark-gray border border-arcade-gray rounded p-4 mb-6">
-                            {isGeneratingLocation && (
-                                 <p className="text-xl text-arcade-yellow animate-pulse">Creating your arena...</p>
+                         {/* --- Content Area (Conditional) --- */}
+                         <div className="flex-grow overflow-y-auto mb-4 pr-2"> {/* Allow content to scroll */}
+                             {modalView === 'generate' && (
+                                 <div>
+                                    {/* Prompt Input */}
+                                    <div className="mb-4">
+                                        <label htmlFor="locationPrompt" className="block text-lg font-medium mb-2 text-arcade-yellow">Describe the location:</label>
+                                        <textarea
+                                            id="locationPrompt"
+                                            rows={3}
+                                            className="w-full p-2 bg-arcade-dark-gray border border-arcade-gray rounded focus:ring-2 focus:ring-logo-yellow focus:border-logo-yellow outline-none resize-none placeholder-arcade-gray text-base"
+                                            placeholder="e.g., A mystical forest clearing at dawn, An ancient ruined temple on a mountaintop, A neon-lit cyberpunk city street at night..."
+                                            value={locationPrompt}
+                                            onChange={(e) => setLocationPrompt(e.target.value)}
+                                            disabled={isGeneratingLocation}
+                                        />
+                                    </div>
+
+                                    {/* Generate Button */}
+                                    <div className="text-center mb-4">
+                                        <button
+                                            onClick={handleGenerateLocation}
+                                            disabled={isGeneratingLocation || !locationPrompt.trim()}
+                                            className={`btn-arcade btn-arcade-secondary w-full sm:w-auto ${isGeneratingLocation ? 'opacity-50 cursor-wait' : ''}`}
+                                        >
+                                            {isGeneratingLocation ? 'Generating...' : 'Generate Location Image'}
+                                        </button>
+                                    </div>
+                                    {/* Generation Result Preview Area (Optional here or keep below?) */}
+                                    {/* Maybe show a smaller preview here after generation */}
+                                </div>
+                             )}
+
+                            {modalView === 'select' && (
+                                <div>
+                                    {isLoadingLocations && <p className="text-arcade-yellow text-center animate-pulse">Loading locations...</p>}
+                                    {locationFetchError && <p className="text-red-500 text-center">Error: {locationFetchError}</p>}
+                                    {!isLoadingLocations && existingLocations.length === 0 && !locationFetchError && (
+                                        <p className="text-arcade-gray text-center py-8">No existing locations found. Try generating one!</p>
+                                    )}
+                                    {!isLoadingLocations && existingLocations.length > 0 && (
+                                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                                            {existingLocations.map((location) => (
+                                                 <button
+                                                    key={location.id}
+                                                    onClick={() => handleSelectExistingLocation(location)}
+                                                    className={`relative aspect-[16/7] rounded overflow-hidden border-4 transition-all duration-200 ${selectedExistingLocation?.id === location.id ? 'border-logo-yellow scale-105 shadow-lg' : 'border-transparent hover:border-arcade-yellow'}`}
+                                                    disabled={isLoadingLocations} // Disable while loading potentially
+                                                 >
+                                                    {location.background_image_url ? (
+                                                         <Image
+                                                            src={location.background_image_url}
+                                                            alt={location.name || 'Existing location'} // Use name for alt text
+                                                            width={160} // Add explicit width
+                                                            height={69} // Adjusted height for 21:9 ratio (160 * 9 / 21)
+                                                            objectFit="cover" // Add objectFit prop
+                                                            sizes="(max-width: 640px) 50vw, (max-width: 768px) 33vw, 25vw"
+                                                        />
+                                                    ) : (
+                                                        <div className="w-full h-full bg-arcade-dark-gray flex items-center justify-center text-arcade-gray">No Image</div>
+                                                    )}
+                                                    {/* Optional: Overlay prompt on hover? */}
+                                                     {selectedExistingLocation?.id === location.id && (
+                                                        <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                                                             <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-logo-yellow" viewBox="0 0 20 20" fill="currentColor">
+                                                                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                                            </svg>
+                                                        </div>
+                                                    )}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
                             )}
-                            {locationGenerationError && (
-                                 <p className="text-lg text-red-500 text-center">Error: {locationGenerationError}</p>
-                            )}
-                            {generatedLocationUrl && !isGeneratingLocation && (
-                                 <Image 
-                                    src={generatedLocationUrl}
-                                    alt="Generated Location Background"
-                                    width={400} // Adjust size as needed
-                                    height={187} // Maintain 21:9 aspect ratio roughly (400 * 9 / 21)
-                                    className="rounded border border-logo-yellow shadow-md"
-                                    priority // Load the new image quickly
-                                />
-                            )}
-                            {!isGeneratingLocation && !locationGenerationError && !generatedLocationUrl && (
-                                <p className="text-arcade-gray text-center">Enter a description and click "Generate Location" to create the background.</p>
+                         </div>
+
+                        {/* --- Shared Preview and Confirm Area --- */}
+                        <div className="flex-shrink-0 border-t border-arcade-gray pt-4">
+                            <h3 className="text-xl font-semibold text-center mb-3 text-arcade-yellow">Preview</h3>
+                             {/* Combined Results/Preview Area */}
+                             <div className="min-h-[150px] flex flex-col items-center justify-center bg-arcade-dark-gray border border-arcade-gray rounded p-3 mb-4">
+                                {isGeneratingLocation && modalView === 'generate' && ( // Show generating only if in generate view
+                                    <p className="text-lg text-arcade-yellow animate-pulse">Creating your arena...</p>
+                                )}
+                                {locationGenerationError && ( // Show generation or selection errors
+                                    <p className="text-base text-red-500 text-center">Error: {locationGenerationError}</p>
+                                )}
+                                {generatedLocationUrl && !isGeneratingLocation && ( // Show generated OR selected image
+                                    <Image
+                                        src={generatedLocationUrl}
+                                        alt={selectedExistingLocation?.name || locationPrompt || "Selected Location"} // Use name or prompt
+                                        width={350} // Slightly smaller preview
+                                        height={150} // Adjusted height for 21:9 ratio (350 * 9 / 21)
+                                        className="rounded border border-logo-yellow shadow-md max-w-full h-auto"
+                                        objectFit="cover" // Ensure cover behavior
+                                        priority // Load preview quickly
+                                    />
+                                )}
+                                {!isGeneratingLocation && !locationGenerationError && !generatedLocationUrl && modalView === 'generate' && (
+                                    <p className="text-arcade-gray text-center">Generate an image to preview it here.</p>
+                                )}
+                                 {!isGeneratingLocation && !locationGenerationError && !generatedLocationUrl && modalView === 'select' && !isLoadingLocations && (
+                                    <p className="text-arcade-gray text-center">Select an existing location above to preview it.</p>
+                                )}
+                                 {!isGeneratingLocation && !locationGenerationError && !generatedLocationUrl && modalView === 'select' && isLoadingLocations && (
+                                     <p className="text-arcade-gray text-center">Loading locations...</p>
+                                )}
+                            </div>
+
+                            {/* Confirm Button */}
+                             {(confirmedLocationId) && !isGeneratingLocation && ( // Show confirm only if an ID is set and not currently generating
+                                <div className="text-center">
+                                    <button
+                                        onClick={handleConfirmLocation}
+                                        className="btn-arcade btn-arcade-primary"
+                                        disabled={!confirmedLocationId} // Extra safety check
+                                    >
+                                        Confirm Location & Fight!
+                                    </button>
+                                </div>
                             )}
                         </div>
-
-                         {/* Confirm Button */} 
-                         {generatedLocationUrl && !isGeneratingLocation && (
-                             <div className="text-center">
-                                <button
-                                    onClick={handleConfirmLocation}
-                                    className="btn-arcade btn-arcade-primary"
-                                >
-                                    Confirm Location & Fight!
-                                </button>
-                            </div>
-                         )}
                     </div>
                 </div>
             )}

@@ -21,35 +21,74 @@ function LoadingFallback({ message }: { message: string }) {
     );
 }
 
-// Helper function to fetch and construct model URL AND name from Supabase
-async function getCharacterData(characterId: string): Promise<{ name: string; modelUrl: string | null } | null> {
-    console.log(`[FightPage] Fetching data for: ${characterId}`);
+// --- Data Fetching Types ---
+interface CharacterData {
+    type: 'character';
+    id: string;
+    name: string;
+    modelUrl: string | null;
+}
+
+interface LocationData {
+    type: 'location';
+    id: string;
+    backgroundImageUrl: string | null;
+    floorTextureUrl: string | null;
+}
+
+type ResourceData = CharacterData | LocationData;
+
+// Helper to ensure absolute URL
+const ensureAbsoluteUrl = (url: string | null): string | null => {
+    if (url && !url.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
+        return `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${url}`;
+    }
+    return url;
+};
+
+// Fetches either character or location data
+async function getResourceData(id: string, resourceType: 'character' | 'location'): Promise<ResourceData | null> {
+    console.log(`[FightPage] Fetching ${resourceType} data for: ${id}`);
     try {
-        const { data, error } = await supabase
-            .from('characters')
-            .select('name, model_glb_url') // Select name as well
-            .eq('id', characterId)
-            .single();
+        if (resourceType === 'character') {
+            const { data, error } = await supabase
+                .from('characters')
+                .select('name, model_glb_url')
+                .eq('id', id)
+                .single();
 
-        if (error) {
-            console.error(`[FightPage] Supabase error fetching data for ${characterId}:`, error);
-            return null;
-        }
-        if (!data?.model_glb_url || !data?.name) {
-            console.error(`[FightPage] Missing name or model_glb_url for ${characterId}.`);
-            return null;
-        }
+            if (error) throw error;
+            if (!data?.model_glb_url || !data?.name) throw new Error("Missing name or model_glb_url");
 
-        let finalModelUrl = data.model_glb_url;
-        // Construct absolute R2 URL if necessary
-        if (!finalModelUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
-            finalModelUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalModelUrl}`;
-        }
-         console.log(`[FightPage] Using model URL: ${finalModelUrl} for Name: ${data.name}`);
-        return { name: data.name, modelUrl: finalModelUrl }; // Return object
+            console.log(`[FightPage] Fetched Character: ${data.name}`);
+            return {
+                type: 'character',
+                id,
+                name: data.name,
+                modelUrl: ensureAbsoluteUrl(data.model_glb_url)
+            };
+        } else if (resourceType === 'location') {
+             const { data, error } = await supabase
+                .from('locations')
+                .select('background_image_url, floor_texture_url')
+                .eq('id', id)
+                .single();
 
-    } catch (err) {
-        console.error(`[FightPage] Unexpected error fetching data for ${characterId}:`, err);
+            if (error) throw error;
+            if (!data?.background_image_url || !data?.floor_texture_url) throw new Error("Missing background_image_url or floor_texture_url");
+            
+             console.log(`[FightPage] Fetched Location: ${id}`);
+            return {
+                type: 'location',
+                id,
+                backgroundImageUrl: ensureAbsoluteUrl(data.background_image_url),
+                floorTextureUrl: ensureAbsoluteUrl(data.floor_texture_url)
+            };
+        }
+        return null; // Should not happen
+
+    } catch (err: any) {
+        console.error(`[FightPage] Supabase error fetching ${resourceType} for ${id}:`, err);
         return null;
     }
 }
@@ -57,53 +96,72 @@ async function getCharacterData(characterId: string): Promise<{ name: string; mo
 // Default export for the page component
 export default function FightPage() {
     const searchParams = useSearchParams();
+    // Use original parameter names
     const charId1 = searchParams.get('char1');
     const charId2 = searchParams.get('char2');
+    const locationId = searchParams.get('location'); // Add location ID
 
-    // State for fetched URLs, names, loading, and errors
-    const [player1Data, setPlayer1Data] = useState<{ name: string; modelUrl: string | null } | null>(null);
-    const [player2Data, setPlayer2Data] = useState<{ name: string; modelUrl: string | null } | null>(null);
+    // State for fetched data, loading, and errors
+    const [player1Data, setPlayer1Data] = useState<CharacterData | null>(null);
+    const [player2Data, setPlayer2Data] = useState<CharacterData | null>(null);
+    const [locationData, setLocationData] = useState<LocationData | null>(null); // Add location state
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!charId1 || !charId2) {
-            setError("Missing character selection in URL (expected ?char1=...&char2=...). ");
+        // Check all required IDs
+        if (!charId1 || !charId2 || !locationId) {
+            setError("Missing parameters in URL (expected ?char1=...&char2=...&location=...). ");
             setIsLoading(false);
             return;
         }
 
-        // Reset state for potential re-fetches if params change
         setIsLoading(true);
         setError(null);
-        setPlayer1Data(null); // Reset data objects
+        setPlayer1Data(null);
         setPlayer2Data(null);
+        setLocationData(null);
 
-        console.log(`[FightPage] Starting fetch for ${charId1} and ${charId2}`);
-        Promise.all([getCharacterData(charId1), getCharacterData(charId2)]) // Use updated function
-            .then(([data1, data2]) => {
-                console.log(`[FightPage] Fetched Data: Player1=${JSON.stringify(data1)}, Player2=${JSON.stringify(data2)}`);
-                if (data1?.modelUrl && data2?.modelUrl) {
-                    setPlayer1Data(data1); // Set the whole data object
-                    setPlayer2Data(data2);
+        console.log(`[FightPage] Starting fetch for Char1:${charId1}, Char2:${charId2}, Loc:${locationId}`);
+        Promise.all([
+            getResourceData(charId1, 'character'),
+            getResourceData(charId2, 'character'),
+            getResourceData(locationId, 'location') // Fetch location data
+        ])
+            .then(([p1Result, p2Result, locResult]) => {
+                const p1 = p1Result as CharacterData | null;
+                const p2 = p2Result as CharacterData | null;
+                const loc = locResult as LocationData | null;
+                
+                console.log(`[FightPage] Fetched Data: P1=${p1?.name}, P2=${p2?.name}, Loc=${loc?.id}`);
+
+                // Check all required data fields (including floor texture)
+                if (p1?.modelUrl && p2?.modelUrl && loc?.backgroundImageUrl && loc?.floorTextureUrl) {
+                    console.log("[FightPage] All required data fetched successfully.");
+                    setPlayer1Data(p1);
+                    setPlayer2Data(p2);
+                    setLocationData(loc);
+                    setError(null); // Clear error on success
+                    setIsLoading(false); // Set loading false ONLY after successful data validation
                 } else {
-                    let errorMsg = "Failed to fetch character data.";
-                    if (!data1?.modelUrl || !data1?.name) errorMsg += ` Could not find model/name for char1: ${charId1}.`;
-                    if (!data2?.modelUrl || !data2?.name) errorMsg += ` Could not find model/name for char2: ${charId2}.`;
+                    let errorMsg = "Failed to fetch required fight data.";
+                    if (!p1?.modelUrl || !p1?.name) errorMsg += ` Char1(${charId1}) missing data.`;
+                    if (!p2?.modelUrl || !p2?.name) errorMsg += ` Char2(${charId2}) missing data.`;
+                    // Check floor texture URL in error message
+                    if (!loc?.backgroundImageUrl || !loc?.floorTextureUrl) errorMsg += ` Loc(${locationId}) missing background or floor data.`;
+                    console.error("[FightPage] Data validation failed:", errorMsg);
                     setError(errorMsg);
+                    setIsLoading(false); // Set loading false after determining data is invalid
                 }
             })
             .catch(err => {
-                console.error("[FightPage] Error fetching character data:", err);
-                setError("An unexpected error occurred while fetching character data.");
-            })
-            .finally(() => {
-                 console.log("[FightPage] Fetch completed.");
-                setIsLoading(false);
+                console.error("[FightPage] Error fetching resource data:", err);
+                setError("An unexpected error occurred while fetching fight data.");
+                setIsLoading(false); // Set loading false on fetch error
             });
 
-    // Re-run effect if search parameters change
-    }, [charId1, charId2]);
+    // Add locationId to dependency array
+    }, [charId1, charId2, locationId]);
 
     // --- Render based on state ---
     if (isLoading) {
@@ -122,21 +180,22 @@ export default function FightPage() {
         );
     }
 
-    // Check data objects and their modelUrl properties
-    if (!player1Data?.modelUrl || !player2Data?.modelUrl) {
-         // This state should ideally be covered by isLoading or error, but as a fallback
-        return <LoadingFallback message="Preparing Scene..." />;
+    // Check all required data objects and their properties (including floor texture)
+    if (!player1Data?.modelUrl || !player2Data?.modelUrl || !locationData?.backgroundImageUrl || !locationData?.floorTextureUrl) {
+        return <LoadingFallback message="Preparing Scene Assets..." />;
     }
 
     // --- Render the Scene ---
     return (
         <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' /* Needed for absolute positioning of health bars */ }}>
-            {/* Pass names and URLs */}
+            {/* Pass names and URLs - guaranteed non-null here after the check */}
             <BattleScene
                 player1ModelUrl={player1Data.modelUrl}
                 player2ModelUrl={player2Data.modelUrl}
                 player1Name={player1Data.name}
-                player2Name={player2Data.name}
+                player2Name={player2Data.name} 
+                backgroundImageUrl={locationData.backgroundImageUrl}
+                floorTextureUrl={locationData.floorTextureUrl}
             />
             {/* Health bars will be rendered inside BattleScene's parent div */}
         </div>

@@ -129,14 +129,6 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
     const [isLoaded, setIsLoaded] = useState(false);
     const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({});
 
-    // --- Apply Initial Facing Rotation ---
-    useEffect(() => {
-        if (isLoaded && modelWrapperRef.current) {
-            const targetRotation = initialFacing === 'right' ? 0 : Math.PI;
-            modelWrapperRef.current.rotation.y = targetRotation;
-        }
-    }, [initialFacing, isPlayerControlled, isLoaded]);
-
     // --- Load Model & Capture Skeleton/Pose ---
     const { scene } = useGLTF(modelUrl);
     useEffect(() => {
