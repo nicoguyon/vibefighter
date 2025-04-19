@@ -877,3 +877,413 @@ export function createDuckKickClip(
     if (tracks.length === 0) { console.warn(`[createDuckKickClip] No tracks generated for ${clipName}.`); return null; }
     return new THREE.AnimationClip(clipName, duration, tracks);
 } 
+
+// --- NEW: Hello Animation ---
+
+// Define the target pose for the 'hello' wave start (based on screenshot)
+export const helloTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
+    'L_Upperarm': { rotation: { x: -33, y: 5, z: -63 }, eulerOrder: 'XYZ' },
+    'L_Forearm':  { rotation: { x: 38, y: 42, z: -34 }, eulerOrder: 'XYZ' },
+    'L_Hand':     { rotation: { x: 0, y: 0, z: 0 }, eulerOrder: 'XYZ' }, 
+    'R_Upperarm': { rotation: { x: -29, y: 118, z: 69 }, eulerOrder: 'XYZ' },
+    'R_Forearm':  { rotation: { x: 31, y: 23, z: 16 }, eulerOrder: 'XYZ' },
+    'R_Hand':     { rotation: { x: 0, y: -54, z: -6 }, eulerOrder: 'XYZ' },
+    // Note: Spine02 waving starts from its initial pose rotation + offset
+};
+
+/**
+ * Creates a transition animation from the initial pose to the hello target pose.
+ */
+export function createTransitionToHelloClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    helloTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>, 
+    clipName: string = 'TransitionToHello', 
+    duration: number = 0.75 // Slightly slower transition
+): THREE.AnimationClip | null { 
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createTransitionToHelloClip] Missing skeleton or initial pose.");
+        return null;
+    }
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration];
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; // Skip bone if no initial data
+        
+        const startQuat = initial.quat.clone();
+        let endQuat = startQuat.clone();
+        const targetInfo = helloTargets[boneName];
+        
+        if (targetInfo) {
+            const eulerOrder = targetInfo.eulerOrder;
+            const r = targetInfo.rotation;
+            tmpEuler.set(deg(r.x), deg(r.y), deg(r.z), eulerOrder);
+            endQuat.setFromEuler(tmpEuler);
+        } // else endQuat remains startQuat (initial pose)
+        
+        // Add track if end is different from start
+        if (!endQuat.equals(startQuat)) {
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                `${boneName}.quaternion`, 
+                times, 
+                [startQuat.x, startQuat.y, startQuat.z, startQuat.w, endQuat.x, endQuat.y, endQuat.z, endQuat.w]
+            ));
+        }
+    });
+    
+    if (tracks.length === 0) { console.warn(`[createTransitionToHelloClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, duration, tracks);
+}
+
+/**
+ * Loops a wave motion (hand/spine) around a target pose.
+ */
+export function createHelloWaveLoopClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    helloTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>, 
+    clipName: string = 'HelloWaveLoop', 
+    loopDuration: number = 5.0 // Slower loop duration (5 seconds)
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createHelloWaveLoopClip] Missing skeleton or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    // Define keyframe times more precisely
+    const times = [
+        0,                     // Start (Target Pose)
+        loopDuration * 0.25,   // Wave Peak
+        loopDuration * 0.75,   // Wave Trough
+        loopDuration           // End (Target Pose - loop wraps)
+    ];
+
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+
+    const handWaveBone = 'R_Hand';
+    const spineWaveBone = 'Spine02'; // Keep spine wave relative to initial?
+    const handWaveAmount = 20; // Degrees +/- Y (Reset to original)
+    const spineWaveAmount = 45; // Degrees +/- Y (Reset to original)
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; 
+
+        const initialQuat = initial.quat.clone();
+        const initialEulerOrder: EulerOrder = 'XYZ'; // Still needed for spine base
+
+        let targetQuat = initialQuat.clone();
+        let targetEulerOrder: EulerOrder = initialEulerOrder; // Explicitly type targetEulerOrder
+        const helloTargetInfo = helloTargets[boneName];
+
+        // Determine the 'base' pose for the wave part
+        if (helloTargetInfo) {
+            targetEulerOrder = helloTargetInfo.eulerOrder; 
+            tmpEuler.set(deg(helloTargetInfo.rotation.x), deg(helloTargetInfo.rotation.y), deg(helloTargetInfo.rotation.z), targetEulerOrder);
+            targetQuat.setFromEuler(tmpEuler);
+        } // else targetQuat remains initialQuat (for bones not in helloTargets)
+
+        const keyframeValues: number[] = [];
+
+        // Frame 0: Target Pose (Loop start)
+        keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w);
+
+        // Frame 1: Wave Peak
+        let peakQuat = new THREE.Quaternion();
+        if (boneName === handWaveBone || boneName === spineWaveBone) {
+            // Corrected: Both bones wave relative to their targetQuat for the loop
+            const baseQuatForWave = targetQuat; 
+            const waveEulerOrder = targetEulerOrder; // Use the target Euler order
+            const waveAmount = (boneName === spineWaveBone) ? spineWaveAmount : handWaveAmount;
+            
+            tmpEuler.setFromQuaternion(baseQuatForWave, waveEulerOrder);
+            tmpEuler.y += deg(waveAmount); // Add peak offset
+            peakQuat.setFromEuler(tmpEuler);
+            keyframeValues.push(peakQuat.x, peakQuat.y, peakQuat.z, peakQuat.w);
+
+        } else {
+            keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w); // Hold target pose
+        }
+
+        // Frame 2: Wave Trough
+        let troughQuat = new THREE.Quaternion();
+        if (boneName === handWaveBone || boneName === spineWaveBone) {
+            // Corrected: Both bones wave relative to their targetQuat for the loop
+            const baseQuatForWave = targetQuat;
+            const waveEulerOrder = targetEulerOrder; // Use the target Euler order
+            const waveAmount = (boneName === spineWaveBone) ? spineWaveAmount : handWaveAmount;
+            
+            tmpEuler.setFromQuaternion(baseQuatForWave, waveEulerOrder);
+            tmpEuler.y -= deg(waveAmount); // Subtract trough offset
+            troughQuat.setFromEuler(tmpEuler);
+            keyframeValues.push(troughQuat.x, troughQuat.y, troughQuat.z, troughQuat.w);
+
+        } else {
+            keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w); // Hold target pose
+        }
+
+        // Frame 3: Target Pose (End of wave cycle - loops back to frame 0)
+        // Corrected: Push targetQuat to loop smoothly
+        keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w);
+
+        // Add track
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
+    });
+
+    if (tracks.length === 0) { console.warn(`[createHelloWaveLoopClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, loopDuration, tracks);
+} 
+
+// --- NEW: Arms Crossed Animation --- 
+
+// Define the target pose for arms crossed (based on screenshot)
+export const armsCrossedTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
+    // Assume XYZ Order based on Leva
+    'L_Upperarm': { rotation: { x: -39, y: -33, z: -130 }, eulerOrder: 'XYZ' },
+    'L_Forearm':  { rotation: { x: 50, y: 26, z: -74 }, eulerOrder: 'XYZ' },
+    'L_Hand':     { rotation: { x: 19, y: 0, z: -9 }, eulerOrder: 'XYZ' }, 
+    'R_Upperarm': { rotation: { x: 14, y: 54, z: 88 }, eulerOrder: 'XYZ' },
+    'R_Forearm':  { rotation: { x: 71, y: 16, z: 57 }, eulerOrder: 'XYZ' },
+    'R_Hand':     { rotation: { x: 11, y: 21, z: 0 }, eulerOrder: 'XYZ' },
+    // Other bones will hold their initial pose relative to the body
+};
+
+/**
+ * Creates a transition animation from the initial pose to the arms crossed target pose.
+ */
+export function createTransitionToArmsCrossedClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    armsCrossedTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>, 
+    clipName: string = 'TransitionToArmsCrossed', 
+    duration: number = 1.0 // Slow transition
+): THREE.AnimationClip | null { 
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createTransitionToArmsCrossedClip] Missing skeleton or initial pose.");
+        return null;
+    }
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration];
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; 
+        
+        const startQuat = initial.quat.clone();
+        let endQuat = startQuat.clone();
+        const targetInfo = armsCrossedTargets[boneName];
+        
+        if (targetInfo) {
+            const eulerOrder = targetInfo.eulerOrder;
+            const r = targetInfo.rotation;
+            tmpEuler.set(deg(r.x), deg(r.y), deg(r.z), eulerOrder);
+            endQuat.setFromEuler(tmpEuler);
+        } // else endQuat remains startQuat (initial pose)
+        
+        // Add track if end is different from start
+        if (!endQuat.equals(startQuat)) {
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                `${boneName}.quaternion`, 
+                times, 
+                [startQuat.x, startQuat.y, startQuat.z, startQuat.w, endQuat.x, endQuat.y, endQuat.z, endQuat.w]
+            ));
+        }
+    });
+    
+    if (tracks.length === 0) { console.warn(`[createTransitionToArmsCrossedClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, duration, tracks);
+}
+
+/**
+ * Creates a looping breathing animation centered around the arms crossed pose.
+ */
+export function createArmsCrossedBreathClip(
+    skeleton: THREE.Skeleton | null, 
+    armsCrossedTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }>, 
+    initialPose: Record<string, InitialPoseData>, // Still need initial for fallback
+    clipName: string = 'ArmsCrossedBreath', 
+    duration: number = 2.5, 
+    intensity: number = 1.7 // Can reuse intensity from idle breath
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(armsCrossedTargets).length === 0 || Object.keys(initialPose).length === 0) {
+        console.warn("[createArmsCrossedBreathClip] Missing skeleton, arms crossed targets, or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration / 2, duration]; 
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+
+    // Reuse the same bones as idle breath for subtle movement
+    const breathingBones = ['Spine01', 'Spine02', 'Head', 'L_Clavicle', 'R_Clavicle', 'L_Upperarm', 'R_Upperarm']; 
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const targetInfo = armsCrossedTargets[boneName];
+        const initial = initialPose[boneName]; // Needed for bones not in armsCrossedTargets
+        
+        let baseQuat = new THREE.Quaternion();
+        let baseEulerOrder: EulerOrder = 'XYZ'; // Default
+
+        // Determine the base pose: Use armsCrossedTarget if available, otherwise use initial pose
+        if (targetInfo) {
+            baseEulerOrder = targetInfo.eulerOrder;
+            tmpEuler.set(deg(targetInfo.rotation.x), deg(targetInfo.rotation.y), deg(targetInfo.rotation.z), baseEulerOrder);
+            baseQuat.setFromEuler(tmpEuler);
+        } else if (initial) {
+            baseQuat.copy(initial.quat); 
+            // Guess initial order if needed (less critical, as these bones might not be in breathingBones)
+            if (boneName.includes('Leg') || boneName.includes('Foot')) baseEulerOrder = 'YXZ'; 
+        } else {
+            return; // Skip bone if no target or initial data
+        }
+
+        if (breathingBones.includes(boneName)) {
+            const peakQuat = new THREE.Quaternion();
+            const deltaEuler = new THREE.Euler();
+            const deltaIntensityRad = deg(intensity);
+
+            // Apply same relative breathing offsets as idle breath
+            if (boneName.includes('Spine')) {
+                deltaEuler.x = -deltaIntensityRad;
+            } else if (boneName.includes('Clavicle')) {
+                deltaEuler.y = boneName.startsWith('L_') ? deltaIntensityRad * 0.5 : -deltaIntensityRad * 0.5;
+            } else if (boneName.includes('Head')) {
+                deltaEuler.x = -deltaIntensityRad * 0.5;
+            } else if (boneName.includes('Upperarm')) {
+                // Apply upper arm breath delta relative to the *arms crossed* base pose
+                deltaEuler.z = boneName.startsWith('L_') ? -deltaIntensityRad * 0.3 : deltaIntensityRad * 0.3; 
+            }
+            
+            // Calculate peak quaternion relative to the base (arms crossed or initial)
+            const deltaQuat = new THREE.Quaternion().setFromEuler(deltaEuler);
+            peakQuat.multiplyQuaternions(baseQuat, deltaQuat); // Apply delta to the determined baseQuat
+
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                `${boneName}.quaternion`, 
+                times, 
+                [
+                    baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w, // Start at base
+                    peakQuat.x, peakQuat.y, peakQuat.z, peakQuat.w, // Move to peak
+                    baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w  // Return to base
+                ]
+            ));
+        } else {
+            // Keep non-breathing bones static at their base pose (arms crossed target or initial)
+            tracks.push(new THREE.QuaternionKeyframeTrack(
+                `${boneName}.quaternion`, 
+                [0], // Only one keyframe needed for static bones
+                [baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w]
+            ));
+        }
+    });
+
+    if (tracks.length === 0) { console.warn(`[createArmsCrossedBreathClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, duration, tracks);
+} 
+
+// --- NEW: Bow Animation --- 
+
+// Define the target pose for arms during the bow (based on screenshot)
+export const bowArmTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
+    // Assume XYZ Order based on Leva
+    'L_Upperarm': { rotation: { x: -29, y: -4, z: -80 }, eulerOrder: 'XYZ' },
+    'L_Forearm':  { rotation: { x: 118, y: 50, z: -55 }, eulerOrder: 'XYZ' },
+    'L_Hand':     { rotation: { x: 0, y: 0, z: 0 }, eulerOrder: 'XYZ' }, 
+    'R_Upperarm': { rotation: { x: -30, y: -4, z: 76 }, eulerOrder: 'XYZ' },
+    'R_Forearm':  { rotation: { x: 135, y: -56, z: 68 }, eulerOrder: 'XYZ' },
+    'R_Hand':     { rotation: { x: 0, y: 0, z: 0 }, eulerOrder: 'XYZ' },
+};
+
+/**
+ * Creates a bowing animation.
+ * Arms move to bow position, spine bends down and slightly further, then returns.
+ */
+export function createBowClip(
+    skeleton: THREE.Skeleton | null, 
+    initialPose: Record<string, InitialPoseData>, 
+    clipName: string = 'Bow', 
+    totalDuration: number = 4.5 // As described: 2s down, 2s further, 1.5s up
+): THREE.AnimationClip | null { 
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createBowClip] Missing skeleton or initial pose.");
+        return null;
+    }
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, 1, 3.5, totalDuration]; // Key times for spine movement
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpQuat2 = new THREE.Quaternion();
+    const tmpQuat3 = new THREE.Quaternion();
+
+    const armBones = Object.keys(bowArmTargets);
+    const spineBoneName = 'Spine01';
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return; 
+        
+        const initialQuat = initial.quat.clone();
+        const keyframeValues: number[] = [];
+
+        if (armBones.includes(boneName)) {
+            const targetInfo = bowArmTargets[boneName];
+            let targetQuat = initialQuat.clone();
+            if (targetInfo) {
+                tmpEuler.set(deg(targetInfo.rotation.x), deg(targetInfo.rotation.y), deg(targetInfo.rotation.z), targetInfo.eulerOrder);
+                targetQuat.setFromEuler(tmpEuler);
+            }
+
+            // Arms move to target by time 2, hold until time 4, then return by 5.5
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 0
+            keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w); // Time 2
+            keyframeValues.push(targetQuat.x, targetQuat.y, targetQuat.z, targetQuat.w); // Time 4 (Hold)
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 5.5 (Return)
+            tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
+
+        } else if (boneName === spineBoneName) {
+            const initialEuler = new THREE.Euler().setFromQuaternion(initialQuat, 'XYZ'); // Assume XYZ for Spine01
+            
+            // Calculate target quaternions
+            tmpEuler.set(deg(-85), initialEuler.y, initialEuler.z, 'XYZ'); // Target 1: -85 deg X
+            tmpQuat.setFromEuler(tmpEuler);
+
+            tmpEuler.set(deg(-92), initialEuler.y, initialEuler.z, 'XYZ'); // Target 2: -92 deg X
+            tmpQuat2.setFromEuler(tmpEuler);
+            
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 0
+            keyframeValues.push(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w);         // Time 2 (-85 deg)
+            keyframeValues.push(tmpQuat2.x, tmpQuat2.y, tmpQuat2.z, tmpQuat2.w);        // Time 4 (-92 deg)
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 5.5 (Return)
+            tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
+
+        } else {
+            // For other bones, keep them at their initial pose throughout
+            // Create a track that just holds the initial pose
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 0
+            keyframeValues.push(initialQuat.x, initialQuat.y, initialQuat.z, initialQuat.w); // Time 5.5
+            tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, [0, totalDuration], keyframeValues));
+        }
+    });
+    
+    if (tracks.length === 0) { console.warn(`[createBowClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, totalDuration, tracks);
+} 
