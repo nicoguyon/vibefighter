@@ -587,7 +587,7 @@ export function createDuckPoseClip(
     initialPose: Record<string, InitialPoseData>, 
     stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
     clipName: string = 'DuckPose', 
-    duration: number = 0.4 // Duration to transition into the pose
+    duration: number = 0.4 // Increased duration from 0.4
 ): THREE.AnimationClip | null {
     if (!skeleton || Object.keys(initialPose).length === 0) {
         console.warn("[createDuckPoseClip] Missing skeleton or initial pose.");

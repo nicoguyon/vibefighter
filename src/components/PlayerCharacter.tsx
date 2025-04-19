@@ -6,21 +6,36 @@ import { useGLTF, useAnimations } from '@react-three/drei';
 // Remove Rapier imports
 
 // Import animation types and functions
-import { 
-    createWalkCycleClip, 
+import {
+    createWalkCycleClip,
     createFightStanceClip,
     createIdleBreathClip,
     createRightPunchClip,
     createDuckPoseClip,
     createBlockPoseClip,
     createDuckKickClip,
-    defaultFightStanceTargets, // Needed by createWalkCycleClip 
+    // --- NEW: Intro Animation Imports ---
+    createTransitionToHelloClip,
+    createHelloWaveLoopClip,
+    createTransitionToArmsCrossedClip,
+    createArmsCrossedBreathClip,
+    createBowClip,
+    // --- Target Pose Imports ---
+    defaultFightStanceTargets,
     blockTargets,
-    type InitialPoseData, 
-    // type EulerOrder // Not directly needed here
+    helloTargets,
+    armsCrossedTargets,
+    // --- Type Imports ---
+    type InitialPoseData,
+    type EulerOrder // Keep this import
 } from '../lib/animations/clips';
 
-// --- NEW: Define Input State Type ---
+
+// --- NEW: Export Fight Phase Type ---
+export type FightPhase = 'LOADING' | 'INTRO_START' | 'INTRO_P1' | 'INTRO_P2' | 'PRE_FIGHT' | 'READY' | 'FIGHT' | 'GAME_OVER';
+
+
+// --- Define Input State Type ---
 export type InputState = {
     left: boolean;
     right: boolean;
@@ -50,8 +65,12 @@ interface PlayerCharacterProps {
     initialPosition: [number, number, number];
     initialFacing: 'left' | 'right';
     isPlayerControlled: boolean;
-    canStartAnimation: boolean;
-    externalInput?: React.RefObject<InputState>; // ADDED: Optional external input source
+    fightPhase: FightPhase;
+    introAnimationType: string | null;
+    startIntroAnimation: boolean;
+    canFight: boolean;
+    externalInput?: React.RefObject<InputState>;
+    onCharacterReady?: () => void;
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -59,6 +78,7 @@ interface AnimationFinishedEvent extends THREE.Event {
     action: THREE.AnimationAction;
     direction: number;
 }
+
 
 // --- Constants ---
 const CHARACTER_WALK_SPEED = 2;
@@ -69,20 +89,19 @@ const GROUND_LEVEL = 0;
 // Debug Collider Visuals (Adjusted Size)
 const DEBUG_CYLINDER_HEIGHT = 1; // Slightly shorter
 const DEBUG_CYLINDER_RADIUS = 0.09; // Significantly narrower
-// Re-define props for useBox
-// const playerPhysicsProps: BoxProps & BodyProps = { ... }; // Can be commented out if not used
-
-// Keep initialPosition definition if needed for visual placement
-// const initialPosition: [number, number, number] = [-2, 2, 0]; 
 
 // --- Component Definition with forwardRef ---
-export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>(({ 
-    modelUrl, 
+export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>((({
+    modelUrl,
     initialPosition,
-    initialFacing, 
-    isPlayerControlled, 
-    canStartAnimation,
-    externalInput
+    initialFacing,
+    isPlayerControlled,
+    fightPhase,
+    introAnimationType,
+    startIntroAnimation,
+    canFight,
+    externalInput,
+    onCharacterReady,
 }, ref) => {
     // --- Refs ---
     const groupRef = useRef<THREE.Group>(null);
@@ -91,22 +110,22 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         groupRef.current = node;
     }, []);
 
-    // Moved attack state refs here, before useImperativeHandle
+    // Action/State Refs
     const isAttackingRef = useRef(false);
-    const canDamageRef = useRef(false); // Tracks if the current attack instance can still deal damage
+    const canDamageRef = useRef(false);
     const isBlockingRef = useRef(false);
-    const isDuckingRef = useRef(false); // Track ducking state
-
-    // Movement/State refs
+    const isDuckingRef = useRef(false);
     const manualVelocityRef = useRef({ x: 0, y: 0, z: 0 });
     const positionRef = useRef(new THREE.Vector3(...initialPosition));
     const skeletonRef = useRef<THREE.Skeleton | null>(null);
     const isMovingHorizontally = useRef(false);
     const hasHitGround = useRef(false);
     const isInStance = useRef(false);
-    const isActionInProgress = useRef(false); // General flag for non-idle/walk actions
+    const isActionInProgress = useRef(false);
+    const currentIntroLoopAction = useRef<THREE.AnimationAction | null>(null);
+    const isReadySignaled = useRef(false);
 
-    // --- NEW: Effect to synchronize positionRef with prop ---
+    // --- Effect to synchronize positionRef with prop ---
     useEffect(() => {
         console.log(`[PlayerCharacter ${initialFacing}] initialPosition prop updated:`, initialPosition);
         positionRef.current.set(...initialPosition);
@@ -114,8 +133,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         // Reset ground/velocity state when position changes drastically (like on navigation)
         hasHitGround.current = false;
         manualVelocityRef.current = { x: 0, y: 0, z: 0 };
-    }, [initialPosition]); // Add initialPosition to dependency array
+    }, [initialPosition]);
 
+    // --- useImperativeHandle ---
     useImperativeHandle(ref, () => ({ 
         getMainGroup: () => groupRef.current,
         getModelWrapper: () => modelWrapperRef.current,
@@ -181,270 +201,251 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 console.warn("Could not find skeleton in the model.");
             }
             setIsLoaded(true);
-        }
-    }, [scene]); 
+        } 
+    }, [scene]);
 
-    // --- Input Handling ---
+    // Define key handlers outside useEffect so they can be referenced in cleanup
+    const handleKeyDown = useCallback((event: KeyboardEvent) => {
+         switch (event.key) {
+             case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: true })); break;
+             case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: true })); break;
+             case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: true })); break;
+             case ' ': setPressedKeys(prev => ({ ...prev, punch: true })); break;
+             case 'b': setPressedKeys(prev => ({ ...prev, block: true })); break;
+             case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: true })); break;
+         }
+    }, []);
+
+    const handleKeyUp = useCallback((event: KeyboardEvent) => {
+          switch (event.key) {
+             case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: false })); break;
+             case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: false })); break;
+             case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: false })); break;
+             case ' ': setPressedKeys(prev => ({ ...prev, punch: false })); break;
+             case 'b': setPressedKeys(prev => ({ ...prev, block: false })); break;
+             case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: false })); break;
+         }
+    }, []);
+
+    // --- Input Handling (Conditionally Active) ---
     useEffect(() => {
-        // Only attach listeners if player controlled AND no external input source is provided
-        if (!isPlayerControlled || externalInput) return;
+        if (!isPlayerControlled || externalInput || !canFight) { // <--- ADDED !canFight check
+             // If listeners were previously attached, remove them
+             window.removeEventListener('keydown', handleKeyDown);
+             window.removeEventListener('keyup', handleKeyUp);
+             return; // Don't attach listeners if not player controlled or fight hasn't started
+        }
 
-         const handleKeyDown = (event: KeyboardEvent) => {
-             switch (event.key) {
-                 case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: true })); break;
-                 case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: true })); break;
-                 case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: true })); break;
-                 case ' ': setPressedKeys(prev => ({ ...prev, punch: true })); break;
-                 case 'b': setPressedKeys(prev => ({ ...prev, block: true })); break;
-                 case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: true })); break; // Added jump key
-             }
-        };
-        const handleKeyUp = (event: KeyboardEvent) => {
-              switch (event.key) {
-                 case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: false })); break;
-                 case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: false })); break;
-                 case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: false })); break;
-                 case ' ': setPressedKeys(prev => ({ ...prev, punch: false })); break;
-                 case 'b': setPressedKeys(prev => ({ ...prev, block: false })); break;
-                 case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: false })); break; // Added jump key
-             }
-        };
         window.addEventListener('keydown', handleKeyDown);
         window.addEventListener('keyup', handleKeyUp);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
             window.removeEventListener('keyup', handleKeyUp);
         };
-    }, [isPlayerControlled, externalInput]);
+         // Add canFight to dependency array to re-evaluate listener attachment
+    }, [isPlayerControlled, externalInput, canFight, handleKeyDown, handleKeyUp]); // Add handlers to dependencies
+
 
     // --- Helper to get the current effective input state ---
     const getEffectiveInputState = useCallback((): InputState => {
+        // Return empty state if fight hasn't started
+        if (!canFight) {
+            return { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+        }
         if (externalInput?.current) {
             return externalInput.current;
         }
         return pressedKeys;
-    }, [externalInput, pressedKeys]);
+    }, [externalInput, pressedKeys, canFight]); // Add canFight dependency
+
 
     // --- Create Animation Clips ---
-    const walkCycleClip = useMemo(() => {
-        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createWalkCycleClip(skeletonRef.current, initialPose, defaultFightStanceTargets, 'WalkCycle', 0.7);
-    }, [initialPose]);
-    const fightStanceClip = useMemo(() => {
-        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createFightStanceClip(skeletonRef.current, initialPose, defaultFightStanceTargets, 'GoToFightStance');
-    }, [initialPose]);
-    const idleBreathClip = useMemo(() => {
-        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createIdleBreathClip(skeletonRef.current, defaultFightStanceTargets, initialPose);
-    }, [initialPose]);
-    const rightPunchClip = useMemo(() => {
-         if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createRightPunchClip(skeletonRef.current, initialPose, defaultFightStanceTargets);
-    }, [initialPose]);
-    const duckPoseClip = useMemo(() => {
-         if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createDuckPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets);
-    }, [initialPose]);
-    const blockPoseClip = useMemo(() => {
-        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createBlockPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets);
-    }, [initialPose]);
-    const duckKickClip = useMemo(() => {
-        if (!skeletonRef.current || Object.keys(initialPose).length === 0) return null;
-        return createDuckKickClip(skeletonRef.current, initialPose);
-    }, [initialPose]);
+    const walkCycleClip = useMemo(() => createWalkCycleClip(skeletonRef.current, initialPose, defaultFightStanceTargets, 'WalkCycle', 0.7), [initialPose]);
+    const fightStanceClip = useMemo(() => createFightStanceClip(skeletonRef.current, initialPose, defaultFightStanceTargets, 'GoToFightStance'), [initialPose]);
+    const idleBreathClip = useMemo(() => createIdleBreathClip(skeletonRef.current, defaultFightStanceTargets, initialPose), [initialPose]);
+    const rightPunchClip = useMemo(() => createRightPunchClip(skeletonRef.current, initialPose, defaultFightStanceTargets), [initialPose]);
+    const duckPoseClip = useMemo(() => createDuckPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets), [initialPose]);
+    const blockPoseClip = useMemo(() => createBlockPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets), [initialPose]);
+    const duckKickClip = useMemo(() => createDuckKickClip(skeletonRef.current, initialPose), [initialPose]);
+
+    // --- NEW: Intro Animation Clips ---
+    const transitionToHelloClip = useMemo(() => createTransitionToHelloClip(skeletonRef.current, initialPose, helloTargets), [initialPose]);
+    const helloWaveLoopClip = useMemo(() => createHelloWaveLoopClip(skeletonRef.current, initialPose, helloTargets), [initialPose]);
+    const transitionToArmsCrossedClip = useMemo(() => createTransitionToArmsCrossedClip(skeletonRef.current, initialPose, armsCrossedTargets), [initialPose]);
+    const armsCrossedBreathClip = useMemo(() => createArmsCrossedBreathClip(skeletonRef.current, armsCrossedTargets, initialPose), [initialPose]);
+    const bowClip = useMemo(() => createBowClip(skeletonRef.current, initialPose), [initialPose]);
+
 
     // --- Setup Animation Actions ---
     const animationsToUse = useMemo(() => {
-        const clips = [];
-        if (walkCycleClip) clips.push(walkCycleClip);
-        if (fightStanceClip) clips.push(fightStanceClip);
-        if (idleBreathClip) clips.push(idleBreathClip);
-        if (rightPunchClip) clips.push(rightPunchClip);
-        if (duckPoseClip) clips.push(duckPoseClip);
-        if (blockPoseClip) clips.push(blockPoseClip);
-        if (duckKickClip) clips.push(duckKickClip);
-        return clips;
-    }, [walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip, duckPoseClip, blockPoseClip, duckKickClip]);
+        const clips = [
+            walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip,
+            duckPoseClip, blockPoseClip, duckKickClip,
+            // Add intro clips
+            transitionToHelloClip, helloWaveLoopClip,
+            transitionToArmsCrossedClip, armsCrossedBreathClip,
+            bowClip
+        ].filter(Boolean); // Filter out any null clips
+        // @ts-ignore - Filter ensures clips are not null
+        return clips as THREE.AnimationClip[];
+    }, [
+        walkCycleClip, fightStanceClip, idleBreathClip, rightPunchClip,
+        duckPoseClip, blockPoseClip, duckKickClip,
+        transitionToHelloClip, helloWaveLoopClip,
+        transitionToArmsCrossedClip, armsCrossedBreathClip,
+        bowClip
+    ]);
     const { actions, mixer } = useAnimations(animationsToUse, groupRef);
 
-    // --- Configure Animation Actions ---
+    // --- Configure Animation Actions & Initial State + Signal Readiness ---
     useEffect(() => {
-         // --- Add check for animation start signal --- 
-         if (!canStartAnimation) {
-             console.log("[PlayerCharacter Anims] Waiting for canStartAnimation signal...");
-             // Optionally stop/reset actions if signal becomes false later?
-             // actions?.IdleBreath?.stop(); 
-             return; // Don't configure or play if not allowed yet
+         if (!actions || !mixer || !isLoaded || !onCharacterReady) { // Check essential dependencies
+             console.log(`[PlayerCharacter ${initialFacing} Anims] Waiting for actions/mixer/load/callback...`);
+             return;
          }
 
-         console.log("[PlayerCharacter Anims] canStartAnimation is true. Configuring actions.");
-
+         console.log(`[PlayerCharacter ${initialFacing} Anims] Configuring actions.`);
          if (actions?.WalkCycle) actions.WalkCycle.setLoop(THREE.LoopRepeat, Infinity);
          if (actions?.GoToFightStance) { actions.GoToFightStance.setLoop(THREE.LoopOnce, 1); actions.GoToFightStance.clampWhenFinished = true; }
          if (actions?.IdleBreath) actions.IdleBreath.setLoop(THREE.LoopRepeat, Infinity);
          if (actions?.RightPunch) { actions.RightPunch.setLoop(THREE.LoopOnce, 1); actions.RightPunch.clampWhenFinished = true; }
          if (actions?.DuckPose) { actions.DuckPose.setLoop(THREE.LoopOnce, 1); actions.DuckPose.clampWhenFinished = true; }
-         if (actions?.BlockPose) {
-            actions.BlockPose.setLoop(THREE.LoopOnce, 1);
-            actions.BlockPose.clampWhenFinished = true;
-         }
-         if (actions?.DuckKick) {
-            actions.DuckKick.setLoop(THREE.LoopOnce, 1);
-            actions.DuckKick.clampWhenFinished = true;
-         }
+         if (actions?.BlockPose) { actions.BlockPose.setLoop(THREE.LoopOnce, 1); actions.BlockPose.clampWhenFinished = true; }
+         if (actions?.DuckKick) { actions.DuckKick.setLoop(THREE.LoopOnce, 1); actions.DuckKick.clampWhenFinished = true; }
+         if (actions?.TransitionToHello) { actions.TransitionToHello.setLoop(THREE.LoopOnce, 1); actions.TransitionToHello.clampWhenFinished = true; }
+         if (actions?.HelloWaveLoop) { actions.HelloWaveLoop.setLoop(THREE.LoopRepeat, Infinity); }
+         if (actions?.TransitionToArmsCrossed) { actions.TransitionToArmsCrossed.setLoop(THREE.LoopOnce, 1); actions.TransitionToArmsCrossed.clampWhenFinished = true; }
+         if (actions?.ArmsCrossedBreath) { actions.ArmsCrossedBreath.setLoop(THREE.LoopRepeat, Infinity); }
+         if (actions?.Bow) { actions.Bow.setLoop(THREE.LoopOnce, 1); actions.Bow.clampWhenFinished = true; }
 
          if (mixer) mixer.timeScale = 1;
 
-         // Initial Idle play (Remove setTimeout)
-         if (actions?.IdleBreath && !isInStance.current) {
-            console.log("[PlayerCharacter Anims] Playing initial IdleBreath NOW.");
-            actions.IdleBreath.reset().fadeIn(0.2).play();
-            isInStance.current = true;
-            // Cleanup function is no longer needed for a timeout here
-            // return () => { ... };
+         console.log(`[PlayerCharacter ${initialFacing} Anims] Initial setup complete.`);
+         isInStance.current = false;
+
+         // --- Signal Readiness --- 
+         if (!isReadySignaled.current) {
+             console.log(`[PlayerCharacter ${initialFacing}] Signaling Ready!`);
+             onCharacterReady(); // Call the passed callback
+             isReadySignaled.current = true;
          }
-    }, [actions, mixer, canStartAnimation]); // Add canStartAnimation to dependency array
 
-    // --- Mixer Finished Listener --- 
-    useEffect(() => {
-         if (!mixer || !actions) return;
-         const idleAction = actions.IdleBreath;
-         const duckAction = actions.DuckPose; // Get duck action for transitions
-         const listener = (e: AnimationFinishedEvent) => {
-            if (e.action === actions.RightPunch) {
-                isActionInProgress.current = false; 
-                isAttackingRef.current = false;
-                canDamageRef.current = false;
-                if (!isBlockingRef.current && !isMovingHorizontally.current && !isDuckingRef.current) {
-                    idleAction?.reset().fadeIn(0.3).play(); 
-                }
-            } else if (e.action === actions.DuckKick) {
-                isActionInProgress.current = false;
-                isAttackingRef.current = false;
-                canDamageRef.current = false;
-                isDuckingRef.current = true; // Remain ducking after kick
-                // Fade back into the held duck pose smoothly if the user is still holding duck
-                duckAction?.reset().fadeIn(0.1).play(); 
-            } else if (e.action === actions.DuckPose) {
-                // isDuckingRef is already true from the trigger
-                isActionInProgress.current = false; // Duck transition finished
-            } else if (e.action === actions.BlockPose) {
-                isActionInProgress.current = false; // Block transition finished
-                // isBlockingRef is already true from the trigger
-            }
-        };
-        mixer.addEventListener('finished', listener);
-        return () => mixer.removeEventListener('finished', listener);
-    }, [mixer, actions]);
+    }, [actions, mixer, isLoaded, onCharacterReady, initialFacing]);
 
-    // --- Effect to Handle Action Triggers --- 
-    useEffect(() => {
-        // Determine effective input state for this frame
-        const currentInput = getEffectiveInputState();
 
-        // Use currentInput instead of pressedKeys or forceBlock
-        const shouldBeBlocking = currentInput.block;
-        const shouldBeDucking = currentInput.duck;
-        
-        const idleAction = actions?.IdleBreath;
-        const walkAction = actions?.WalkCycle;
-        const punchAction = actions?.RightPunch;
-        const duckAction = actions?.DuckPose;
-        const blockAction = actions?.BlockPose;
-        const kickAction = actions?.DuckKick;
+    // --- MOVE THESE DEFINITIONS UP ---
 
-        // --- Blocking --- 
-        if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
-            isActionInProgress.current = true;
-            isBlockingRef.current = true;
-            isDuckingRef.current = false; // Can't block and duck
-            idleAction?.fadeOut(0.1);
-            walkAction?.fadeOut(0.1);
-            punchAction?.fadeOut(0.1);
-            duckAction?.fadeOut(0.1);
-            kickAction?.fadeOut(0.1);
-            blockAction?.reset().fadeIn(0.2).play();
-        } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
-            isActionInProgress.current = true; // For fade out duration
-            blockAction?.fadeOut(0.2);
-            isBlockingRef.current = false;
-            // Determine next state after blocking stops
-            setTimeout(() => { // Delay setting action false until fade potentially finishes
-                 isActionInProgress.current = false;
-                 if (shouldBeDucking && !isDuckingRef.current) {
-                     // Trigger duck if key is held
-                     triggerDuck(); 
-                 } else if (isInStance.current && !isMovingHorizontally.current && !shouldBeDucking) {
-                     idleAction?.reset().fadeIn(0.3).play();
-                 }
-            }, 200); // Match fade out duration
-        }
-
-        // --- Ducking --- 
-        else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
-            triggerDuck();
-        } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
-            triggerStandUp();
-        }
-
-        // --- Punch/Kick --- 
-        else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) { // Check punch trigger, ignore if blocking
-            if (isDuckingRef.current && kickAction) { // Trigger Duck Kick
-                 triggerKick();
-            } else if (!isDuckingRef.current && punchAction) { // Trigger Normal Punch
-                 triggerPunch();
-            }
-        }
-
-    }, [actions, isInStance, isActionInProgress, getEffectiveInputState]);
-
-    // --- Helper Action Triggers --- 
     const triggerDuck = useCallback(() => {
-        if (!actions?.DuckPose) return;
-        console.log("Triggering Duck");
+        if (!actions?.DuckPose || !mixer) return; // Added mixer check
+
+        // Only trigger if not already ducking or performing another blocking action
+        if (isDuckingRef.current || isActionInProgress.current) {
+            // console.log(`[PlayerCharacter ${initialFacing}] Duck trigger ignored: Already ducking or action in progress.`);
+             return;
+        }
+         console.log(`[PlayerCharacter ${initialFacing}] Triggering Duck`);
         isActionInProgress.current = true;
         isDuckingRef.current = true;
+
+        // --- FORCE STOP other actions instead of fading ---
+        console.log(`[PlayerCharacter ${initialFacing}] Stopping potentially active actions before ducking.`);
+        mixer.stopAllAction(); // Stop everything first
+        // actions.IdleBreath?.fadeOut(0.1);
+        // actions.WalkCycle?.fadeOut(0.1);
+        // actions.RightPunch?.fadeOut(0.1); // Should already be stopped by isActionInProgress check, but belt-and-suspenders
+        // actions.BlockPose?.fadeOut(0.1); // Should already be stopped
+        // actions.DuckKick?.fadeOut(0.1); // Should already be stopped
+        // --- End Change ---
+        
+        // Now play the duck pose
+        actions.DuckPose.reset().fadeIn(0.2).play(); // Keep the fade-in for smoothness
+
+     }, [actions, mixer, isDuckingRef, isActionInProgress, initialFacing]);
+
+     // Define triggerDuck dependency here explicitly for clarity if needed
+     const triggerDuckDep = triggerDuck; 
+
+    const triggerBlock = useCallback(() => {
+        if (!actions?.BlockPose) return;
+        console.log(`[PlayerCharacter ${initialFacing}] Triggering Block`);
+        isActionInProgress.current = true;
+        isBlockingRef.current = true;
+        isDuckingRef.current = false; // Stop ducking when blocking
         actions.IdleBreath?.fadeOut(0.1);
         actions.WalkCycle?.fadeOut(0.1);
         actions.RightPunch?.fadeOut(0.1);
-        actions.BlockPose?.fadeOut(0.1);
+        actions.DuckPose?.fadeOut(0.1); // Fade out duck if active
         actions.DuckKick?.fadeOut(0.1);
-        actions.DuckPose.reset().fadeIn(0.2).play();
-    }, [actions]);
+        actions.BlockPose.reset().fadeIn(0.2).play();
+    }, [actions, initialFacing]);
+
+    const stopBlock = useCallback(() => {
+        if (!actions?.BlockPose) return;
+        console.log(`[PlayerCharacter ${initialFacing}] Stopping Block`);
+        isActionInProgress.current = true;
+        actions.BlockPose.fadeOut(0.2);
+        isBlockingRef.current = false;
+        setTimeout(() => {
+            isActionInProgress.current = false;
+            const currentInput = getEffectiveInputState();
+            if (currentInput.duck && !isDuckingRef.current) {
+                 triggerDuckDep(); // Call the dependency-managed version
+             } else if (isInStance.current && !isMovingHorizontally.current && !currentInput.duck) {
+                 // Check if idleAction exists before using it
+                 if(actions?.IdleBreath) {
+                    actions.IdleBreath.reset().fadeIn(0.3).play();
+                 }
+            }
+        }, 200);
+    }, [actions, getEffectiveInputState, isInStance, initialFacing, triggerDuckDep]); // Use triggerDuckDep
 
     const triggerStandUp = useCallback(() => {
-        if (!actions?.DuckPose || !isDuckingRef.current) return;
-        console.log("Triggering Stand Up");
-        isActionInProgress.current = true; // Mark as busy during fade
-        actions.DuckPose.fadeOut(0.2);
+        const duckAction = actions?.DuckPose;
+        if (!duckAction || !isDuckingRef.current) return;
+
+        console.log(`[PlayerCharacter ${initialFacing}] Triggering Stand Up (Revised Logic)`);
+        isActionInProgress.current = true;
+        duckAction.fadeOut(0.2);
         isDuckingRef.current = false;
-        setTimeout(() => { // Allow fade out before potentially going idle
+
+        const currentInput = getEffectiveInputState();
+
+        setTimeout(() => {
             isActionInProgress.current = false;
-            if (isInStance.current && !isMovingHorizontally.current && !pressedKeys.block) { // Don't idle if blocking
-                actions.IdleBreath?.reset().fadeIn(0.3).play();
+            const idleAction = actions?.IdleBreath;
+
+            // Log the state values being checked (keeping isInStance for context, though not used in condition)
+            console.log(`[PlayerCharacter ${initialFacing}] Stand Up Timeout Check: isMoving=${isMovingHorizontally.current}, isBlockingInput=${currentInput.block}, hasIdleAction=${!!idleAction}, (wasInStance=${isInStance.current})`);
+
+            // --- REMOVED isInStance check from the condition ---
+            if (!isMovingHorizontally.current && !currentInput.block && idleAction) { 
+                console.log(`[PlayerCharacter ${initialFacing}] Conditions met (Revised). Playing IdleBreath.`);
+                idleAction.reset().fadeIn(0.3).play();
+                // Set stance true AFTER starting idle breath.
+                isInStance.current = true; 
+            } else {
+                console.warn(`[PlayerCharacter ${initialFacing}] Conditions NOT met for IdleBreath after stand up (Revised).`);
             }
-        }, 200); // Match fade out duration
-    }, [actions, isInStance, pressedKeys.block]); // Include block key check
+        }, 200);
+    // Remove isInStance from dependency array as it's no longer directly used in the condition logic
+    }, [actions, getEffectiveInputState]); 
 
     const triggerKick = useCallback(() => {
         if (!actions?.DuckKick) return;
-        console.log("Triggering Kick");
+        console.log(`[PlayerCharacter ${initialFacing}] Triggering Kick`);
         isActionInProgress.current = true;
         isAttackingRef.current = true;
         canDamageRef.current = true;
         actions.IdleBreath?.fadeOut(0.1);
         actions.WalkCycle?.fadeOut(0.1);
         actions.BlockPose?.fadeOut(0.1);
-        actions.RightPunch?.fadeOut(0.1); // Fade out punch if somehow active
-        // Don't fade out DuckPose, kick should interrupt/override smoothly
+        actions.RightPunch?.fadeOut(0.1);
         actions.DuckKick.reset().fadeIn(0.1).play();
-    }, [actions]);
+     }, [actions, initialFacing]);
 
      const triggerPunch = useCallback(() => {
         if (!actions?.RightPunch) return;
-        console.log("Triggering Punch");
+        console.log(`[PlayerCharacter ${initialFacing}] Triggering Punch`);
         isActionInProgress.current = true;
         isAttackingRef.current = true;
         canDamageRef.current = true;
@@ -454,121 +455,368 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         actions.DuckPose?.fadeOut(0.1);
         actions.DuckKick?.fadeOut(0.1);
         actions.RightPunch.reset().fadeIn(0.1).play();
-    }, [actions]);
+    }, [actions, initialFacing]);
 
-    // --- Frame Update (Manual Movement, Jump & Animation Trigger) ---
-    useFrame((state, delta) => { 
+    // --- END MOVED DEFINITIONS ---
+
+
+    // --- Mixer Finished Listener ---
+    useEffect(() => {
+         if (!mixer || !actions) return;
+         const idleAction = actions.IdleBreath;
+         const duckAction = actions.DuckPose;
+         const stanceAction = actions.GoToFightStance;
+
+         const listener = (e: AnimationFinishedEvent) => {
+            const finishedActionName = Object.keys(actions).find(name => actions[name] === e.action);
+            // console.log(`[PlayerCharacter ${initialFacing} Anim Finished] Action: ${finishedActionName}`);
+
+            // Handle finishing fight actions
+            if (e.action === actions.RightPunch || e.action === actions.DuckKick) {
+                isActionInProgress.current = false; 
+                isAttackingRef.current = false;
+                canDamageRef.current = false;
+                if (canFight) {
+                    if (e.action === actions.DuckKick) {
+                        isDuckingRef.current = true; 
+                    } else if (!isBlockingRef.current && !isMovingHorizontally.current && !isDuckingRef.current) {
+                        idleAction?.reset().fadeIn(0.3).play(); 
+                    }
+                }
+            // --- RESTORED DUCKPOSE FINISH LOGIC ---
+            } else if (e.action === duckAction) { 
+                console.log(`[PlayerCharacter ${initialFacing}] DuckPose animation transition finished.`);
+                isActionInProgress.current = false; // Allow other actions now
+                // DO NOT trigger stand up from here anymore.
+            // --- END RESTORATION ---
+            } else if (e.action === actions.BlockPose) { // Separate BlockPose handling
+                 isActionInProgress.current = false; 
+            }
+             // --- Handle finishing Intro transitions ---
+             else if (e.action === actions.TransitionToHello && actions.HelloWaveLoop) {
+                 console.log(`[PlayerCharacter ${initialFacing} Intro] TransitionToHello finished. Playing HelloWaveLoop.`);
+                 actions.HelloWaveLoop.reset().fadeIn(0.2).play();
+                 currentIntroLoopAction.current = actions.HelloWaveLoop;
+             } else if (e.action === actions.TransitionToArmsCrossed && actions.ArmsCrossedBreath) {
+                 console.log(`[PlayerCharacter ${initialFacing} Intro] TransitionToArmsCrossed finished. Playing ArmsCrossedBreath.`);
+                 actions.ArmsCrossedBreath.reset().fadeIn(0.2).play();
+                 currentIntroLoopAction.current = actions.ArmsCrossedBreath;
+             } else if (e.action === actions.Bow) {
+                 console.log(`[PlayerCharacter ${initialFacing} Intro] Bow finished.`);
+                 currentIntroLoopAction.current = null; 
+             }
+
+             // --- Handle finishing GoToFightStance ---
+             else if (stanceAction && e.action === stanceAction) { 
+                 console.log(`[PlayerCharacter ${initialFacing}] GoToFightStance finished. Playing IdleBreath.`);
+                 idleAction?.reset().fadeIn(0.2).play();
+                 isInStance.current = true; 
+            }
+        };
+        mixer.addEventListener('finished', listener);
+        return () => mixer.removeEventListener('finished', listener);
+        // --- ADJUSTED DEPENDENCIES ---
+    }, [mixer, actions, canFight, initialFacing]); // Removed getEffectiveInputState, triggerStandUp
+
+
+    // --- NEW: Effect to Handle Intro Animation Trigger ---
+    useEffect(() => {
+        // Log dependencies whenever the effect runs
+        console.log(`[PlayerCharacter ${initialFacing} Intro Effect Check] fightPhase: ${fightPhase}, startIntroProp: ${startIntroAnimation}, type: ${introAnimationType}, actions ready: ${!!actions}`);
+
+        // ---> Move Check Up <--- 
+        // Only proceed if it's this character's turn for the intro
+        if (!startIntroAnimation || !introAnimationType || !actions) {
+             return; 
+        }
+
+        // Now we know startIntroAnimation is true for this character
+        console.log(`[PlayerCharacter ${initialFacing}] Starting Intro Animation Trigger Logic for Type: ${introAnimationType}`); 
+        const wrapper = modelWrapperRef.current;
+        if (!wrapper) {
+            console.error(`[PlayerCharacter ${initialFacing}] ModelWrapper ref not found for intro rotation.`);
+            return;
+        }
+
+        // --- NEW: Rotate character to face camera before intro animation ---
+        // Try the SAME rotation for both: -90 degrees
+        const targetYRotation = -Math.PI / 2;
+        console.log(`[PlayerCharacter ${initialFacing}] Setting intro rotation: ${targetYRotation.toFixed(3)}`);
+        wrapper.rotation.y = targetYRotation;
+        // --- End Rotation ---
+
+        // Fade out any existing action
+        // --- Fade out (only when starting intro) ---
+        console.log(`[PlayerCharacter ${initialFacing}] Fading out other actions...`); 
+        Object.values(actions).forEach(action => {
+             // Add extra check for action existence before fadeOut
+             if (action) { 
+                  // Optionally log which action is being faded
+                  // console.log(`[PlayerCharacter ${initialFacing}] Fading out: ${Object.keys(actions).find(name => actions[name] === action)}`);
+                  action.fadeOut(0.1);
+             }
+        });
+        currentIntroLoopAction.current = null;
+
+        let transitionAction: THREE.AnimationAction | undefined | null = null;
+        let loopAction: THREE.AnimationAction | undefined | null = null;     // Allow null from actions
+
+        // --- Select Actions ---
+        switch (introAnimationType) {
+            case 'Hello':
+                transitionAction = actions.TransitionToHello;
+                loopAction = actions.HelloWaveLoop;
+                break;
+            case 'ArmsCrossed':
+                transitionAction = actions.TransitionToArmsCrossed;
+                loopAction = actions.ArmsCrossedBreath;
+                break;
+            case 'Bow':
+                transitionAction = actions.Bow;
+                break;
+            default:
+                console.warn(`[PlayerCharacter ${initialFacing}] Unknown intro animation type: ${introAnimationType}.`);
+                return;
+        }
+         // Log selected actions
+         console.log(`[PlayerCharacter ${initialFacing}] Selected Actions - Transition: ${transitionAction ? 'Found' : 'None'}, Loop: ${loopAction ? 'Found' : 'None'}`);
+
+        // --- Play Actions ---
+        // Check if action exists before playing
+        if (transitionAction) {
+             console.log(`[PlayerCharacter ${initialFacing}] Playing Transition Action...`); // Log play transition
+             transitionAction.reset().fadeIn(0.3).play();
+        } else if (loopAction) {
+             console.log(`[PlayerCharacter ${initialFacing}] Playing Loop Action directly...`); // Log play loop
+             loopAction.reset().fadeIn(0.3).play();
+             currentIntroLoopAction.current = loopAction; // Assign only if loopAction exists
+        } else {
+             console.warn(`[PlayerCharacter ${initialFacing}] No intro action found to play for type: ${introAnimationType}`); // Log no action found
+        }
+        
+    }, [startIntroAnimation, introAnimationType, actions, initialFacing, fightPhase]);
+
+
+     // --- NEW: Effect to Handle Fight Phase Changes (Post-Intro) ---
+     useEffect(() => {
+         if (!actions || !mixer || !skeletonRef.current || Object.keys(initialPose).length === 0) { // Added checks for mixer, skeleton, initialPose
+             console.log(`[PlayerCharacter ${initialFacing}] Fight Phase Effect: Missing prerequisites (actions, mixer, skeleton, initialPose)`);
+             return;
+         }
+         const idleAction = actions.IdleBreath;
+         const stanceAction = actions.GoToFightStance;
+
+         // Check if we are specifically entering PRE_FIGHT and not already in stance
+         if (fightPhase === 'PRE_FIGHT' && !isInStance.current) {
+             console.log(`[PlayerCharacter ${initialFacing}] Phase PRE_FIGHT. Resetting pose and transitioning to Stance.`);
+             
+             // 1. Stop intro loop if active
+             if (currentIntroLoopAction.current) {
+                 console.log(`[PlayerCharacter ${initialFacing}] Fading out intro loop before stance: ${Object.keys(actions).find(name => actions[name] === currentIntroLoopAction.current)}`);
+                 currentIntroLoopAction.current.fadeOut(0.1); // Faster fadeout
+                 currentIntroLoopAction.current = null; // Clear the ref
+             }
+             
+             // 2. Stop all other actions immediately
+             mixer.stopAllAction();
+             console.log(`[PlayerCharacter ${initialFacing}] Stopped all actions.`);
+
+             // 3. Reset skeleton to initial pose MANUALLY
+             console.log(`[PlayerCharacter ${initialFacing}] Manually resetting skeleton to initial pose.`);
+             skeletonRef.current.bones.forEach(bone => {
+                 const boneName = bone.name;
+                 const initial = initialPose[boneName];
+                 if (initial) {
+                     bone.position.copy(initial.pos);
+                     bone.quaternion.copy(initial.quat);
+                     bone.scale.copy(initial.scale);
+                 } else {
+                      console.warn(`[PlayerCharacter ${initialFacing}] Missing initial pose data for bone: ${boneName} during PRE_FIGHT reset.`);
+                 }
+             });
+             // Force update the matrix world after manual changes if needed? May not be necessary before starting new animation.
+             // groupRef.current?.updateMatrixWorld(true); 
+
+             // 4. Play the stance transition
+             if (stanceAction) {
+                 console.log(`[PlayerCharacter ${initialFacing}] Playing GoToFightStance.`);
+                 stanceAction.reset().fadeIn(0.5).play(); // Transition to fight stance
+             } else {
+                 console.error(`[PlayerCharacter ${initialFacing}] GoToFightStance action not found!`);
+             }
+
+         } 
+         // --- REFINED Condition for Stopping Actions ---
+         // Only stop actions if moving OUT of the active fight/setup phases
+         else if (fightPhase !== 'FIGHT' && fightPhase !== 'PRE_FIGHT' && fightPhase !== 'READY' && fightPhase !== 'INTRO_P1' && fightPhase !== 'INTRO_P2') { 
+             // Now only runs on e.g., LOADING, INTRO_START, GAME_OVER
+
+             console.log(`[PlayerCharacter ${initialFacing}] Phase ${fightPhase}. Stopping non-intro actions.`); // Updated log
+
+             // Reset relevant state flags
+             isActionInProgress.current = false;
+             isAttackingRef.current = false;
+             isBlockingRef.current = false;
+             isDuckingRef.current = false;
+             isMovingHorizontally.current = false;
+             isInStance.current = false; // No longer in fight stance
+
+             // Fade out all fight-related actions, BUT NOT the intro loop if it's still active
+             Object.values(actions).forEach(action => {
+                 const introLoop = currentIntroLoopAction.current;
+                 // Only fade if it exists AND it's not the current intro loop
+                 if (action && (!introLoop || action !== introLoop)) { 
+                     action.fadeOut(0.2);
+                 }
+             });
+            
+             // Don't clear currentIntroLoopAction.current here, let the intro effect manage it
+         }
+
+     }, [fightPhase, actions, mixer, initialPose, isInStance, initialFacing]); // Added mixer and initialPose dependencies
+
+
+    // --- Effect to Handle Action Triggers (Only During FIGHT Phase) ---
+    useEffect(() => {
+         if (!canFight || !actions) {
+             return;
+         }
+
+        const currentInput = getEffectiveInputState();
+        const shouldBeBlocking = currentInput.block;
+        const shouldBeDucking = currentInput.duck;
+
+        // Use the helper functions defined above
+        if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
+             triggerBlock();
+        } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
+             stopBlock();
+        }
+        else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
+            triggerDuck();
+        } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
+            triggerStandUp();
+        }
+        else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) {
+            if (isDuckingRef.current && actions.DuckKick) { // Check kick action exists
+                 triggerKick();
+            } else if (!isDuckingRef.current && actions.RightPunch) { // Check punch action exists
+                 triggerPunch();
+            }
+        }
+
+    }, [actions, isInStance, isActionInProgress, getEffectiveInputState, canFight,
+        triggerBlock, stopBlock, triggerDuck, triggerStandUp, triggerKick, triggerPunch]); // Add helpers to dependencies
+
+
+    // --- Frame Update (Manual Movement, Jump & Animation Trigger - Gated by canFight) ---
+    useFrame((state, delta) => {
         delta = Math.min(delta, 0.05);
         const group = groupRef.current;
         if (!group || !isLoaded) return;
 
+        // Gatekeeping based on canFight & Conditional Mixer Update
+        if (!canFight) {
+             manualVelocityRef.current = { x: 0, y: 0, z: 0 };
+             group.position.copy(positionRef.current);
+
+             // Explicit checks for each potentially running action
+             let shouldUpdateMixer = false;
+             const introLoop = currentIntroLoopAction.current; // Cache the ref value
+             // Check if introLoop is not null *and* isRunning
+             if (introLoop && introLoop.isRunning()) {
+                 shouldUpdateMixer = true;
+             // Check action exists *and* isRunning for others
+             } else if (actions?.TransitionToHello && actions.TransitionToHello.isRunning()) {
+                 shouldUpdateMixer = true;
+             } else if (actions?.TransitionToArmsCrossed && actions.TransitionToArmsCrossed.isRunning()) {
+                 shouldUpdateMixer = true;
+             } else if (actions?.Bow && actions.Bow.isRunning()) {
+                 shouldUpdateMixer = true;
+             } else if (actions?.GoToFightStance && actions.GoToFightStance.isRunning()) {
+                 shouldUpdateMixer = true;
+             }
+
+             if (shouldUpdateMixer && mixer) { // Also check mixer exists
+                 mixer.update(delta);
+             }
+             return;
+        }
+
+        // --- FIGHT PHASE LOGIC ---
         const currentPos = positionRef.current;
         const velocity = manualVelocityRef.current;
-        const currentInput = getEffectiveInputState(); // Get effective input state for movement
-
-        // --- Horizontal Movement (Only applies when grounded) ---
+        const currentInput = getEffectiveInputState();
         let targetVelocityX = 0;
         const isGrounded = hasHitGround.current && currentPos.y <= GROUND_LEVEL;
 
-        // Use currentInput for movement checks
-        if (!externalInput && isPlayerControlled && !isActionInProgress.current && isGrounded) {
-             if (currentInput.left || currentInput.right) {
-                targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
-            }
-        } else if (externalInput && !isActionInProgress.current && isGrounded) { // AI controlled movement
+        // Horizontal Movement
+        if (!isActionInProgress.current && isGrounded) {
              if (currentInput.left || currentInput.right) {
                 targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
             }
         }
-        // Apply ground velocity if grounded, otherwise keep existing air velocity
-        if (isGrounded) {
-             velocity.x = targetVelocityX;
-        }
-        
-        // --- Vertical Movement (Jump & Gravity) ---
-        // --- DEBUG LOGGING for JUMP --- 
-        // if (isPlayerControlled && pressedKeys.jump) {
-        //     console.log(`P1 Trying Jump: isGrounded=${isGrounded} (hasHitGround=${hasHitGround.current}, posY=${currentPos.y.toFixed(3)}), !actionInProgress=${!isActionInProgress.current}`);
-        // }
-        // --- END DEBUG LOGGING ---
+        if (isGrounded) { velocity.x = targetVelocityX; }
 
-        // Apply Jump Force + Horizontal Jump Velocity - Use currentInput
-        if ((isPlayerControlled || externalInput) && currentInput.jump && isGrounded && !isActionInProgress.current) {
+        // Vertical Movement (Jump & Gravity)
+        if (currentInput.jump && isGrounded && !isActionInProgress.current) {
             velocity.y = JUMP_FORCE;
-            // Apply horizontal jump speed based on keys pressed *at the moment of jump*
-            if (currentInput.left) {
-                velocity.x = -JUMP_HORIZONTAL_SPEED;
-            } else if (currentInput.right) {
-                velocity.x = JUMP_HORIZONTAL_SPEED;
-            } else {
-                velocity.x = 0; // Neutral jump
-            }
-            // Only log if player controlled to avoid AI spam
-            if (isPlayerControlled) { 
-                 console.log(`---> P1 JUMPING! VelX: ${velocity.x.toFixed(2)}, VelY: ${velocity.y.toFixed(2)}`);
-            }
+            if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
+            else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
+            else velocity.x = 0;
         }
-        
-        // Apply gravity ONLY if airborne (or starting a jump)
-        if (!isGrounded || velocity.y > 0) { // Simplified airborne check
-             velocity.y -= GRAVITY * delta;
-        } 
-        // Note: Ground clamping below handles setting velocity.y = 0 when appropriate
+        if (!isGrounded || velocity.y > 0) { velocity.y -= GRAVITY * delta; }
 
-        // --- Update Position ---
+        // Update Position
         currentPos.x += velocity.x * delta;
         currentPos.y += velocity.y * delta;
-        currentPos.z += velocity.z * delta; 
+        currentPos.z += velocity.z * delta;
 
-        // --- Ground Collision / State Update ---
-        if (currentPos.y <= GROUND_LEVEL && velocity.y <= 0) { 
-            if (!isGrounded) { // If we just landed
-                // console.log(`P${isPlayerControlled ? 1:2} LANDED`);
-            }
-            currentPos.y = GROUND_LEVEL;
-            velocity.y = 0; 
-            // Do NOT reset velocity.x here, let ground movement logic handle it next frame
-            if (!hasHitGround.current) {
-                 hasHitGround.current = true; 
-            }
-        } 
-        
+        // Ground Collision / State Update
+        if (currentPos.y <= GROUND_LEVEL && velocity.y <= 0) {
+             currentPos.y = GROUND_LEVEL;
+             velocity.y = 0;
+             if (!hasHitGround.current) { hasHitGround.current = true; }
+        }
         group.position.copy(currentPos);
 
-        // --- Animation Control (Walk/Idle Trigger) ---
+        // Animation Control (Walk/Idle Trigger - Only during FIGHT)
         const isCurrentlyMovingHorizontallyOnGround = isGrounded && targetVelocityX !== 0;
-        // Check grounded state before triggering walk/idle
-        // Use currentInput in condition checks if needed, but targetVelocityX already reflects input
-        if ((isPlayerControlled || externalInput) && !isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
+        if (!isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
             const walkAction = actions?.WalkCycle;
             const idleAction = actions?.IdleBreath;
             if (isCurrentlyMovingHorizontallyOnGround) {
-                if (isInStance.current) idleAction?.fadeOut(0.2);
-                walkAction?.reset().fadeIn(0.2).play();
+                if (isInStance.current && idleAction) idleAction.fadeOut(0.2);
+                if (walkAction) walkAction.reset().fadeIn(0.2).play();
             } else {
-                walkAction?.fadeOut(0.2);
+                if (walkAction) walkAction.fadeOut(0.2);
                 if (idleAction && isInStance.current) idleAction.reset().fadeIn(0.3).play();
             }
             isMovingHorizontally.current = isCurrentlyMovingHorizontallyOnGround;
-        } 
-        // TODO: Add jump/fall animation triggers based on velocity.y and isGrounded
-    });
+        }
+
+        // Mixer update MUST happen every frame during the fight phase
+        if (mixer) { // Check mixer exists
+            mixer.update(delta);
+        }
+
+    }); // End useFrame
 
     // --- Render ---
     if (!isLoaded) { return null; }
-    
+
     return (
-        <group ref={mainGroupRefCallback} name="CharacterModelGroup">
-            <group ref={modelWrapperRef} name="ModelWrapper">
+        <group ref={mainGroupRefCallback} name={`CharacterModelGroup-${initialFacing}`}>
+            <group ref={modelWrapperRef} name={`ModelWrapper-${initialFacing}`}>
                  <primitive object={scene} />
             </group>
+            {/* Debug Cylinder */}
             <mesh position={[0, DEBUG_CYLINDER_HEIGHT / 2, 0]} visible={false}>
-                <cylinderGeometry args={[DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_HEIGHT, 16]} />
-                {/* Use isPlayerControlled to determine color, external input doesn't change this fundamental property */}
-                <meshStandardMaterial color={isPlayerControlled ? "blue" : "red"} wireframe transparent opacity={0.5} />
+                 <cylinderGeometry args={[DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_HEIGHT, 16]} />
+                 <meshStandardMaterial color={isPlayerControlled ? "blue" : "red"} wireframe transparent opacity={0.5} />
             </mesh>
         </group>
     );
-}));
+})));
 
 PlayerCharacter.displayName = 'PlayerCharacter';

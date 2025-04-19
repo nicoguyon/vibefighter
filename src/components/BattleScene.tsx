@@ -6,7 +6,8 @@ import * as THREE from 'three';
 // Import from @react-three/cannon
 // Uncomment PlayerCharacter
 // Ensure PlayerCharacterHandle is imported correctly and not defined locally
-import { PlayerCharacter, PlayerCharacterHandle, InputState } from './PlayerCharacter'; // Import InputState
+// Pass new props to PlayerCharacter: fightPhase, introAnimationType, startIntroAnimation, canFight, applyInitialRotation
+import { PlayerCharacter, PlayerCharacterHandle, InputState, FightPhase } from './PlayerCharacter'; // Import InputState and FightPhase
 import HealthBar from './HealthBar'; // Import the HealthBar component
 import { AIController } from './AIController'; // Import AIController
 
@@ -26,8 +27,9 @@ const MIN_CAM_Z = 2.76;
 const MAX_CAM_Z = 4.5;
 const CAM_X = 0.11;
 const CAM_Y = 0.31;       // Lowered Camera Y 
-const CAM_LOOKAT_Y = 1.1 // Matching LookAt Y for straight view
+const CAM_LOOKAT_Y = 1.2 // Matching LookAt Y for straight view
 const LERP_FACTOR = 0.1;
+const INTRO_CAMERA_SMOOTH_TIME = 0.4; // Approx time for damping transition
 const BASE_DISTANCE_FACTOR = 0.3;
 const INITIAL_FOV = 50; // Keep FOV constant here for now
 const MAX_HEALTH = 1000; // Define max health
@@ -38,6 +40,15 @@ const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position che
 // Re-introduce FLOOR_TEXTURE_REPEAT (or define if removed)
 const FLOOR_TEXTURE_REPEAT = 8; 
 const VERTICAL_COLLISION_THRESHOLD = 0.5; // Allow jumping over if Y difference > this
+
+// Add FightPhase type/enum (moved to PlayerCharacter.tsx)
+// type FightPhase = 'LOADING' | 'INTRO_START' | 'INTRO_P1' | 'INTRO_P2' | 'PRE_FIGHT' | 'READY' | 'FIGHT' | 'GAME_OVER';
+
+// Define available intro animation types (matching clip names or identifiers)
+const INTRO_ANIMATION_TYPES = ['Hello', 'ArmsCrossed', 'Bow']; // Example types
+
+// Helper function to pick a random intro animation
+const getRandomIntroAnimation = () => INTRO_ANIMATION_TYPES[Math.floor(Math.random() * INTRO_ANIMATION_TYPES.length)];
 
 // REMOVED Local definition of PlayerCharacterHandle
 // export interface PlayerCharacterHandle {
@@ -113,60 +124,66 @@ function useBattleState() {
 interface SceneContentProps {
     player1ModelUrl: string;
     player2ModelUrl: string;
-    isAIActive: boolean; // ADDED
-    backgroundImageUrl: string; // Add background URL prop
-    // Add floorTextureUrl prop back
-    floorTextureUrl: string;    
+    isAIActive: boolean;
+    backgroundImageUrl: string;
+    floorTextureUrl: string;
+    fightPhase: FightPhase;
+    onSceneReady: () => void;
+    p1IntroAnim: string | null;
+    p2IntroAnim: string | null;
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
-const SceneContent: React.FC<SceneContentProps> = memo(({ 
-    player1ModelUrl, 
-    player2ModelUrl, 
-    isAIActive, // ADDED
-    backgroundImageUrl, 
-    floorTextureUrl // Add prop back to destructuring
+const SceneContent: React.FC<SceneContentProps> = memo(({
+    player1ModelUrl,
+    player2ModelUrl,
+    isAIActive,
+    backgroundImageUrl,
+    floorTextureUrl,
+    fightPhase,
+    onSceneReady,
+    p1IntroAnim,
+    p2IntroAnim,
 }: SceneContentProps) => {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
-    // --- NEW: Ref for AI's simulated input state --- 
-    const aiInputRef = useRef<InputState>({ 
-        left: false, right: false, punch: false, 
-        duck: false, block: false, jump: false 
-    });
+    const aiInputRef = useRef<InputState>({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
     const controlsRef = useRef<any>(null);
-    const { scene } = useThree(); // Get scene object
+    const { scene } = useThree();
     const { setPlayer1Health, setPlayer2Health } = useBattleState();
-    // const frameCountRef = useRef(0); // Remove frame counter ref
-    
-    // --- NEW: State for player readiness ---
-    // const [player1Ready, setPlayer1Ready] = useState(false); // Remove readiness state
-    // const [player2Ready, setPlayer2Ready] = useState(false);
-    const [p1InitialRotationSet, setP1InitialRotationSet] = useState(false); // Use state
-    const [p2InitialRotationSet, setP2InitialRotationSet] = useState(false); // Use state
-    const dynamicRotationHasRun = useRef(false); // Ref to log dynamic rotation once
 
-    // State for manually loaded textures
+    // --- State ---
+    const dynamicRotationHasRun = useRef(false);
+    const sceneReadySignaled = useRef(false);
     const [loadedBackgroundTexture, setLoadedBackgroundTexture] = useState<THREE.Texture | null>(null);
-    const [loadedFloorTexture, setLoadedFloorTexture] = useState<THREE.Texture | null>(null); // State for floor texture
+    const [loadedFloorTexture, setLoadedFloorTexture] = useState<THREE.Texture | null>(null);
+    const [p1Ready, setP1Ready] = useState(false);
+    const [p2Ready, setP2Ready] = useState(false);
+
+    // --- Effect to signal readiness (Textures AND Characters) ---
+    useEffect(() => {
+        if (loadedBackgroundTexture && loadedFloorTexture && p1Ready && p2Ready && !sceneReadySignaled.current) {
+             console.log("[SceneContent] Textures loaded AND Both Characters Ready. Signaling ready to BattleScene.");
+             onSceneReady();
+             sceneReadySignaled.current = true;
+        }
+    }, [loadedBackgroundTexture, loadedFloorTexture, p1Ready, p2Ready, onSceneReady]);
 
     // UseEffect for Background Texture Loading (Manual)
     useEffect(() => {
-        console.log("[SceneContent] Manual background texture loading useEffect RUNNING."); 
+        console.log("[SceneContent] Manual background texture loading useEffect RUNNING.");
         const loader = new THREE.TextureLoader();
-        setLoadedBackgroundTexture(null); 
+        setLoadedBackgroundTexture(null);
         loader.load(
-            backgroundImageUrl, 
-            (texture) => { 
+            backgroundImageUrl,
+            (texture) => {
                 console.log("[SceneContent] Background texture MANUALLY loaded.");
-                texture.colorSpace = 'srgb'; 
-                texture.needsUpdate = true; 
+                texture.colorSpace = 'srgb';
+                texture.needsUpdate = true;
                 setLoadedBackgroundTexture(texture);
-                // Keep scene.background commented out if plane approach is preferred
-                // scene.background = texture; 
                 console.log("[SceneContent] Background texture properties set and state updated.");
             },
-            undefined, 
+            undefined,
             (error) => { console.error("[SceneContent] Error loading background texture manually:", error); }
         );
     }, [backgroundImageUrl, scene]);
@@ -192,59 +209,17 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
         );
     }, [floorTextureUrl]); // Depend only on the URL
 
-    // --- Add useEffect for OrbitControls Logging ---
-    /*
-    useEffect(() => {
-        const controls = controlsRef.current;
-        if (!controls) return; // Exit if controls aren't ready
-
-        const logOrbitState = () => {
-            const camera = controls.object as THREE.PerspectiveCamera; // Or OrthographicCamera
-            console.log(
-                `Orbit Change - CamPos: x=${camera.position.x.toFixed(2)}, y=${camera.position.y.toFixed(2)}, z=${camera.position.z.toFixed(2)} | ` +
-                `Target: x=${controls.target.x.toFixed(2)}, y=${controls.target.y.toFixed(2)}, z=${controls.target.z.toFixed(2)}`
-            );
-        };
-
-        // Add listener
-        controls.addEventListener('change', logOrbitState);
-        console.log("[SceneContent] OrbitControls 'change' listener added.");
-
-        // Cleanup listener on component unmount or controls change
-        return () => {
-            console.log("[SceneContent] OrbitControls 'change' listener removed.");
-            controls.removeEventListener('change', logOrbitState);
-        };
-        
-
-    }, [controlsRef]); // Re-run effect if controlsRef itself changes (should only be once)
-*/
-
     useFrame((state, delta) => {
         const { camera } = state;
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
 
-        // frameCountRef.current++; // Remove frame count increment
-
-        // --- Check player readiness --- 
-        // if (!player1Ready && player1Ref.current?.getIsReady()) { // Remove readiness checks
-        //     setPlayer1Ready(true);
-        //     console.log("[SceneContent useFrame] Player 1 is ready.");
-        // }
-        // if (!player2Ready && player2Ref.current?.getIsReady()) {
-        //     setPlayer2Ready(true);
-        //     console.log("[SceneContent useFrame] Player 2 is ready.");
-        // }
-
-        // Boundary clamping & Ground level
+        // --- Boundary Clamping (Runs always) ---
         if (p1Group) {
             p1Group.position.x = THREE.MathUtils.clamp(p1Group.position.x, MIN_X, MAX_X);
-            if (p1Group.position.y < GROUND_LEVEL) p1Group.position.y = GROUND_LEVEL;
         }
         if (p2Group) {
             p2Group.position.x = THREE.MathUtils.clamp(p2Group.position.x, MIN_X, MAX_X);
-            if (p2Group.position.y < GROUND_LEVEL) p2Group.position.y = GROUND_LEVEL;
         }
 
         if (p1Group && p2Group) {
@@ -252,63 +227,78 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
             const p2Wrapper = player2Ref.current!.getModelWrapper();
             if (!p1Wrapper || !p2Wrapper) return;
 
-            // --- Set Initial Rotation Once --- 
-            if (!p1InitialRotationSet && player1Ref.current) { // Check state
-                 if (p1Wrapper) {
-                    console.log(`[SceneContent useFrame BEFORE Initial Rot P1] Wrapper Y Rot: ${p1Wrapper.rotation.y.toFixed(3)}`); // Log before
-                    p1Wrapper.rotation.y = 0; // P1 starts left, faces right
-                    // p1InitialRotationSet.current = true;
-                    setP1InitialRotationSet(true); // Set state
-                    console.log(`[SceneContent useFrame AFTER Initial Rot P1] Wrapper Y Rot: ${p1Wrapper.rotation.y.toFixed(3)}, State Set: true`); // Log after
-                 }
-            }
-            if (!p2InitialRotationSet && player2Ref.current) { // Check state
-                 if (p2Wrapper) {
-                    console.log(`[SceneContent useFrame BEFORE Initial Rot P2] Wrapper Y Rot: ${p2Wrapper.rotation.y.toFixed(3)}`); // Log before
-                    p2Wrapper.rotation.y = Math.PI; // P2 starts right, faces left
-                    // p2InitialRotationSet.current = true;
-                    setP2InitialRotationSet(true); // Set state
-                    console.log(`[SceneContent useFrame AFTER Initial Rot P2] Wrapper Y Rot: ${p2Wrapper.rotation.y.toFixed(3)}, State Set: true`); // Log after
-                 }
+            // --- Set Initial Rotation during PRE_FIGHT --- 
+            if (fightPhase === 'PRE_FIGHT') {
+                if (player1Ref.current && p1Wrapper) {
+                    console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P1 Rotation");
+                    p1Wrapper.rotation.y = 0; // P1 faces right
+                }
+                if (player2Ref.current && p2Wrapper) {
+                    console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P2 Rotation");
+                    p2Wrapper.rotation.y = Math.PI; // P2 faces left
+                }
             }
 
-            // --- START GATED LOGIC --- 
-            // Only proceed with collision, facing, camera, and hit detection updates if 
-            // both players have landed and initial rotations are done.
-            const playersReadyForInteraction = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround() && p1InitialRotationSet && p2InitialRotationSet;
+            // --- Gated Logic based on Fight Phase ---
+            const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
 
-            if (playersReadyForInteraction) {
+            // Camera Intro Focus Points
+            // Adjust lookAt Y value for intros
+            const introLookAtY = 0.9;
+            const p1IntroFocusPos = new THREE.Vector3(p1Group.position.x, introLookAtY, p1Group.position.z);
+            const p2IntroFocusPos = new THREE.Vector3(p2Group.position.x, introLookAtY, p2Group.position.z);
+            const introCamDistance = 1.4; // Adjusted distance for frontal view
+            const introCamYOffset = CAM_Y + 0.2; // Raised Y position for intro view
 
-                // Make Characters Face Each Other 
-                let angleP1: number, angleP2: number; 
-                angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
-                angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
+             // --- Phase-Specific Logic ---
+             if (fightPhase === 'INTRO_P1' && camera) {
+                 // Damp towards P1 target position
+                 const p1TargetCamPosIntro = new THREE.Vector3(p1Group.position.x, introCamYOffset, p1Group.position.z + introCamDistance);
+                 camera.position.x = THREE.MathUtils.damp(camera.position.x, p1TargetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.position.y = THREE.MathUtils.damp(camera.position.y, p1TargetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.position.z = THREE.MathUtils.damp(camera.position.z, p1TargetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.lookAt(p1IntroFocusPos); // Keep lookAt instant for now
+                 camera.updateProjectionMatrix();
 
-                const targetP1Rotation = angleP1 - Math.PI / 2; // Calculate target rotation
+             } else if (fightPhase === 'INTRO_P2' && camera) {
+                  // Damp towards P2 target position
+                 const p2TargetCamPosIntro = new THREE.Vector3(p2Group.position.x, introCamYOffset, p2Group.position.z + introCamDistance);
+                 camera.position.x = THREE.MathUtils.damp(camera.position.x, p2TargetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.position.y = THREE.MathUtils.damp(camera.position.y, p2TargetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.position.z = THREE.MathUtils.damp(camera.position.z, p2TargetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
+                 camera.lookAt(p2IntroFocusPos);
+                 camera.updateProjectionMatrix();
+
+             } else if (fightPhase === 'PRE_FIGHT' && camera) {
+                // Switch back to LERP for faster visual settling before READY
+                const fightViewMidPointX = (p1Group.position.x + p2Group.position.x) / 2;
+                const fightViewTargetZ = THREE.MathUtils.clamp(MIN_CAM_Z + Math.abs(p1Group.position.x - p2Group.position.x) * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
+                const fightViewTargetPos = new THREE.Vector3(fightViewMidPointX, CAM_Y, fightViewTargetZ);
+                
+                camera.position.x = THREE.MathUtils.lerp(camera.position.x, fightViewTargetPos.x, LERP_FACTOR * 1.5); // Use lerp (maybe slightly faster factor)
+                camera.position.y = THREE.MathUtils.lerp(camera.position.y, fightViewTargetPos.y, LERP_FACTOR * 1.5);
+                camera.position.z = THREE.MathUtils.lerp(camera.position.z, fightViewTargetPos.z, LERP_FACTOR * 1.5);
+                
+                camera.lookAt(fightViewMidPointX, CAM_LOOKAT_Y, 0);
+                camera.updateProjectionMatrix();
+
+             } else if (fightPhase === 'FIGHT' && playersLanded && camera) {
+                // --- FIGHT PHASE LOGIC (Collision, Facing, Dynamic Camera, Hit Detection) ---
+                // Dynamic facing should work correctly now after PRE_FIGHT rotation
+                let angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
+                let angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
+                const targetP1Rotation = angleP1 - Math.PI / 2;
                 const targetP2Rotation = angleP2 - Math.PI / 2;
 
-                // --- Log first dynamic calculation --- 
-                if (!dynamicRotationHasRun.current) {
-                    console.log(`[SceneContent First Dynamic Rot] P1 PosX: ${p1Group?.position.x.toFixed(3)}, P2 PosX: ${p2Group?.position.x.toFixed(3)}`);
-                    console.log(`[SceneContent First Dynamic Rot] Calc Angle P1: ${angleP1.toFixed(3)}, Calc Angle P2: ${angleP2.toFixed(3)}`);
-                    // Log the target rotation that WILL be applied
-                    console.log(`[SceneContent First Dynamic Rot] Target Dyn Rot P1: ${targetP1Rotation.toFixed(3)}, Target Dyn Rot P2: ${targetP2Rotation.toFixed(3)}`);
-                    dynamicRotationHasRun.current = true;
-                }
+                if (!dynamicRotationHasRun.current) { dynamicRotationHasRun.current = true; }
 
                 p1Wrapper.rotation.y = targetP1Rotation;
                 p2Wrapper.rotation.y = targetP2Rotation;
-                 // console.log(`[useFrame Dyn Rot] P1 Ready: ${player1Ready}, P2 Ready: ${player2Ready} => Dynamic rot applied`);
-            
 
-                // Collision
+                // Collision (Only during fight)
                 const distX = Math.abs(p1Group.position.x - p2Group.position.x);
-                const distY = Math.abs(p1Group.position.y - p2Group.position.y); // Calculate Y distance again
-                // if (player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround() && distX < MIN_SEPARATION) { // Original check (Reverted again)
-                // Condition check moved outside to the 'playersReadyForInteraction' check
-                // Re-introduce vertical check *inside* the interaction gate
-                if (distX < MIN_SEPARATION && distY < VERTICAL_COLLISION_THRESHOLD) { 
-                    // console.log(`[Collision] Applying correction. distX: ${distX.toFixed(2)}, distY: ${distY.toFixed(2)}`);
+                const distY = Math.abs(p1Group.position.y - p2Group.position.y);
+                if (distX < MIN_SEPARATION && distY < VERTICAL_COLLISION_THRESHOLD) {
                     player1Ref.current!.resetVelocityX();
                     player2Ref.current!.resetVelocityX();
                     const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
@@ -319,35 +309,30 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                     player2Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP2X, MIN_X, MAX_X));
                 }
 
-                // Dynamic Camera
+                // Dynamic Camera (Only during fight)
                 const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + distX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
-                if (camera) { // Check if camera exists from useFrame state
-                    const midPointX = (p1Group.position.x + p2Group.position.x) / 2; // Calculate midpoint
-                    camera.position.x = THREE.MathUtils.lerp(camera.position.x, midPointX, LERP_FACTOR); 
+                if (camera) {
+                    const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
+                    camera.position.x = THREE.MathUtils.lerp(camera.position.x, midPointX, LERP_FACTOR);
                     camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, LERP_FACTOR);
-                    camera.lookAt(midPointX, CAM_LOOKAT_Y, 0); 
-                    camera.updateProjectionMatrix(); 
+                    camera.lookAt(midPointX, CAM_LOOKAT_Y, 0);
+                    camera.updateProjectionMatrix();
                 }
 
-                // --- Hit Detection & Damage (with Blocking) --- 
+                // Hit Detection & Damage (Only during fight)
                 const p1 = player1Ref.current;
                 const p2 = player2Ref.current;
-
                 if (p1 && p2) {
                     const p1Attacking = p1.isAttacking();
                     const p2Attacking = p2.isAttacking();
-                    const p1Blocking = p1.isBlocking(); 
-                    const p2Blocking = p2.isBlocking(); 
-                    
-                    // Player 1 attacking Player 2
+                    const p1Blocking = p1.isBlocking();
+                    const p2Blocking = p2.isBlocking();
                     if (p1Attacking && distX < HIT_DISTANCE && p1.getCanDamage()) {
                         const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
                         console.log(`HIT: P1 -> P2 ${p2Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
-                        p1.confirmHit(); 
+                        p1.confirmHit();
                         setPlayer2Health(h => Math.max(0, h - damage));
                     }
-
-                    // Player 2 attacking Player 1
                     if (p2Attacking && distX < HIT_DISTANCE && p2.getCanDamage()) {
                         const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
                         console.log(`HIT: P2 -> P1 ${p1Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
@@ -355,48 +340,50 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                         setPlayer1Health(h => Math.max(0, h - damage));
                     }
                 }
-
-            } // End: if (playersReadyForInteraction)
-            // --- END GATED LOGIC ---
+             } // End: if (fightPhase === 'FIGHT')
 
         } // End: if (p1Group && p2Group)
     });
 
     // Ensure the component returns JSX
+    // Add console log for floor texture state before rendering mesh
+    console.log(`[SceneContent Render] Floor Texture State: ${loadedFloorTexture ? 'Loaded' : 'Not Loaded'}`, loadedFloorTexture);
+    console.log(`[SceneContent Render] Player Ready States: P1=${p1Ready}, P2=${p2Ready}`); // Log player ready state
+
     return (
-        <Suspense fallback={null}> 
-             {/* Fallback background color (can keep or remove) */}
-             <color attach="background" args={['#202020']} /> 
-             
+        <Suspense fallback={null}>
+             <color attach="background" args={['#202020']} />
              <OrbitControls
                  ref={controlsRef}
                  enablePan={false}
                  enableZoom={false}
-                 enableRotate={false}
-                 target={[0, CAM_LOOKAT_Y, 0]}
+                 enableRotate={false} // Disable manual rotation
+                 target={[0, CAM_LOOKAT_Y, 0]} // Keep initial target reasonable
              />
-              
-             {/* Background Plane Mesh - Uncomment and use state texture */}
              {loadedBackgroundTexture && (
-                 <mesh position={[0, 45/7, -10]} rotation={[0, 0, 0]}> 
-                     <planeGeometry args={[30, 90/7]} /> 
-                     <meshBasicMaterial 
+                 <mesh position={[0, 45/7, -10]} rotation={[0, 0, 0]}>
+                     <planeGeometry args={[30, 90/7]} />
+                     <meshBasicMaterial
                          map={loadedBackgroundTexture} // Apply texture from state
-                         side={THREE.DoubleSide} 
-                         transparent={false} 
+                         side={THREE.DoubleSide}
+                         transparent={false}
                          depthWrite={false} // Keep behind other objects
                      />
                  </mesh>
              )}
 
-            {/* Player Characters */}
+            {/* Player Characters - Remove onStanceReached prop */}
             <PlayerCharacter
                 ref={player1Ref}
                 modelUrl={player1ModelUrl}
                 initialPosition={PLAYER1_START_POS}
                 initialFacing="right"
                 isPlayerControlled={true}
-                canStartAnimation={p1InitialRotationSet && p2InitialRotationSet} // Use state variables
+                fightPhase={fightPhase}
+                introAnimationType={p1IntroAnim}
+                startIntroAnimation={fightPhase === 'INTRO_P1'}
+                canFight={fightPhase === 'FIGHT'}
+                onCharacterReady={() => { setP1Ready(true); }}
             />
             <PlayerCharacter
                 ref={player2Ref}
@@ -404,18 +391,21 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 initialPosition={PLAYER2_START_POS}
                 initialFacing="left"
                 isPlayerControlled={false}
-                externalInput={aiInputRef} // ADDED: Pass AI input ref
-                canStartAnimation={p1InitialRotationSet && p2InitialRotationSet} // Use state variables
+                externalInput={aiInputRef}
+                fightPhase={fightPhase}
+                introAnimationType={p2IntroAnim}
+                startIntroAnimation={fightPhase === 'INTRO_P2'}
+                canFight={fightPhase === 'FIGHT'}
+                onCharacterReady={() => { setP2Ready(true); }}
             />
-            
-            {/* Render AI Controller */}
-            <AIController 
-                playerRef={player2Ref} 
-                opponentRef={player1Ref} 
-                isActive={isAIActive} 
-                aiInputRef={aiInputRef} // Pass the AI input state ref 
+
+            <AIController
+                playerRef={player2Ref}
+                opponentRef={player1Ref}
+                isActive={isAIActive} // Use the prop passed down
+                aiInputRef={aiInputRef}
             />
-            
+
             {/* Ground Plane */}
             <mesh
                 rotation={[-Math.PI / 2, 0, 0]}
@@ -425,73 +415,156 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 <planeGeometry args={[50, 50]} />
                 {/* Apply floor texture from state conditionally */}
                 {loadedFloorTexture ? (
-                     <meshStandardMaterial map={loadedFloorTexture} color="#ffffff" /> 
+                     <meshStandardMaterial map={loadedFloorTexture} color="#ffffff" />
                 ) : (
                      <meshStandardMaterial color="#808080" /> // Fallback while loading
                 )}
             </mesh>
-            
-            {/* Lights */} 
+
+            {/* Lights */}
             <ambientLight intensity={0.6} />
             <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
             <directionalLight position={[-10, 10, -5]} intensity={0.5} />
         </Suspense>
     );
-}); // Close memo wrapper new position
+}); // Close memo wrapper
 
 // --- BattleScene Component (Exported - Manages State & Renders Canvas + UI) ---
-export function BattleScene({ 
-    player1ModelUrl, 
-    player2ModelUrl, 
-    player1Name, 
-    player2Name, 
-    backgroundImageUrl, 
+export function BattleScene({
+    player1ModelUrl,
+    player2ModelUrl,
+    player1Name,
+    player2Name,
+    backgroundImageUrl,
     floorTextureUrl // Add prop back
 }: BattleSceneProps) {
     const [player1Health, setPlayer1Health] = useState(MAX_HEALTH);
     const [player2Health, setPlayer2Health] = useState(MAX_HEALTH);
-    const [isAIActive, setIsAIActive] = useState(true); // ADDED AI active state
+    // Rename isAIActive state to reflect its purpose - enabling/disabling based on fight phase
+    const [isAIEnabled, setIsAIEnabled] = useState(false); // Default to disabled
+
+    // --- NEW: Fight Phase State ---
+    const [fightPhase, setFightPhase] = useState<FightPhase>('LOADING');
+    const [p1IntroAnim, setP1IntroAnim] = useState<string | null>(null);
+    const [p2IntroAnim, setP2IntroAnim] = useState<string | null>(null);
+    const [showReadyText, setShowReadyText] = useState(false);
+    const [showFightText, setShowFightText] = useState(false);
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
 
-    // ADDED Debug func for AI
-    const toggleAI = () => setIsAIActive((prev: boolean) => !prev); // Add type for prev
+    // --- NEW: Effect to manage Fight Phase transitions (Reintroduce PRE_FIGHT timeout) ---
+    useEffect(() => {
+        console.log(`[BattleScene] Fight Phase Changed: ${fightPhase}`);
+        let phaseTimer: NodeJS.Timeout | undefined;
+
+        switch (fightPhase) {
+            case 'INTRO_START':
+                // Choose intro animations
+                setP1IntroAnim(getRandomIntroAnimation());
+                setP2IntroAnim(getRandomIntroAnimation());
+                 // Give a brief moment for things to settle before P1 intro
+                phaseTimer = setTimeout(() => setFightPhase('INTRO_P1'), 500);
+                break;
+            case 'INTRO_P1':
+                // Player 1 intro duration
+                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000);
+                break;
+            case 'INTRO_P2':
+                // Player 2 intro duration
+                phaseTimer = setTimeout(() => setFightPhase('PRE_FIGHT'), 4000);
+                break;
+            case 'PRE_FIGHT':
+                // Reintroduce Timeout - Give 2.2s for camera/stance to settle
+                console.log("[BattleScene] Entered PRE_FIGHT. Starting 2.2s timer for READY phase...");
+                phaseTimer = setTimeout(() => {
+                     // Check if still in PRE_FIGHT before transitioning (safety)
+                     if (fightPhase === 'PRE_FIGHT') { 
+                          setFightPhase('READY');
+                     }
+                 }, 2200); 
+                break;
+            case 'READY':
+                setShowReadyText(true);
+                phaseTimer = setTimeout(() => {
+                    setShowReadyText(false);
+                    setFightPhase('FIGHT');
+                }, 1000);
+                break;
+            case 'FIGHT':
+                setShowFightText(true);
+                setIsAIEnabled(true);
+                phaseTimer = setTimeout(() => setShowFightText(false), 1000);
+                break;
+             case 'LOADING':
+                 // Reset state if needed when going back to loading
+                 setIsAIEnabled(false);
+                 setShowReadyText(false);
+                 setShowFightText(false);
+                 setP1IntroAnim(null);
+                 setP2IntroAnim(null);
+                 break;
+        }
+
+        return () => { if (phaseTimer) clearTimeout(phaseTimer); }
+    }, [fightPhase]);
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>
-            <> 
+            <>
                 <Canvas
                     shadows
+                    // Keep initial camera settings for the default fight view
                     camera={{ position: [CAM_X, CAM_Y, MIN_CAM_Z + 0.2], fov: INITIAL_FOV }}
                     style={{ height: '100%', width: '100%', position: 'absolute', top: 0, left: 0, zIndex: 1 }}
                 >
-                    {/* Pass ALL props down to SceneContent */}
+                    {/* Pass down fight phase and related state */}
                     <SceneContent
                         player1ModelUrl={player1ModelUrl}
                         player2ModelUrl={player2ModelUrl}
-                        isAIActive={isAIActive} // ADDED
+                        // Pass isAIEnabled state
+                        isAIActive={isAIEnabled}
                         backgroundImageUrl={backgroundImageUrl}
-                        floorTextureUrl={floorTextureUrl} // Pass prop down
+                        floorTextureUrl={floorTextureUrl}
+                        // --- NEW PROPS ---
+                        fightPhase={fightPhase}
+                        onSceneReady={() => {
+                             if (fightPhase === 'LOADING') {
+                                 console.log("[BattleScene] SceneContent Textures ready, starting intro sequence.");
+                                 setFightPhase('INTRO_START');
+                             }
+                        }}
+                        p1IntroAnim={p1IntroAnim}
+                        p2IntroAnim={p2IntroAnim}
                     />
                 </Canvas>
 
                 {/* UI Overlay */}
                  <div style={{
-                     position: 'absolute', top: 0, left: 0, width: '100%', 
-                     padding: '20px', boxSizing: 'border-box', pointerEvents: 'none', 
-                     zIndex: 2, display: 'flex', justifyContent: 'space-between', 
-                     alignItems: 'flex-start' 
+                     position: 'absolute', top: 0, left: 0, width: '100%',
+                     padding: '20px', boxSizing: 'border-box', pointerEvents: 'none',
+                     zIndex: 2, display: 'flex', justifyContent: 'space-between',
+                     alignItems: 'flex-start'
                  }}>
                     <HealthBar name={player1Name} currentHealth={player1Health} maxHealth={MAX_HEALTH} alignment="left" style={{ position: 'relative' }} />
                     <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} />
                 </div>
-                 {/* Optional Debug Button - Changed to toggle AI */}
-                 <button 
-                     onClick={toggleAI} 
+
+                 {/* --- NEW: Ready/Fight Text Overlay --- */}
+                 <div style={{
+                     position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
+                     zIndex: 3, pointerEvents: 'none', textAlign: 'center'
+                 }}>
+                     {showReadyText && <p style={{ fontSize: '4em', color: 'white', fontWeight: 'bold', textShadow: '2px 2px 4px #000000' }}>Ready?</p>}
+                     {showFightText && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
+                 </div>
+
+                 {/* Removed Debug Button */}
+                 {/* <button
+                     onClick={() => {}} // No toggle function anymore
                      style={{position: 'absolute', bottom: '10px', left: '10px', zIndex: 3, pointerEvents: 'all'}}
                  >
-                     Toggle AI ({isAIActive ? 'ON' : 'OFF'})
-                 </button> 
+                     Toggle AI (State: {isAIEnabled ? 'ON' : 'OFF'})
+                 </button> */}
             </>
         </BattleStateContext.Provider>
     );
