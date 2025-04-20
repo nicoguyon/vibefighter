@@ -89,6 +89,9 @@ const GROUND_LEVEL = 0;
 // Debug Collider Visuals (Adjusted Size)
 const DEBUG_CYLINDER_HEIGHT = 1; // Slightly shorter
 const DEBUG_CYLINDER_RADIUS = 0.09; // Significantly narrower
+// --- ADDED: Boundary Constants (copied from BattleScene) ---
+const MIN_X = -8;
+const MAX_X = 8;
 
 // --- Component Definition with forwardRef ---
 export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>((({
@@ -766,6 +769,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             else velocity.x = 0;
         }
         if (!isGrounded || velocity.y > 0) { velocity.y -= GRAVITY * delta; }
+
+        // --- NEW: Boundary Checks Before Position Update ---
+        const nextX = currentPos.x + velocity.x * delta;
+        if (nextX <= MIN_X || nextX >= MAX_X) {
+            velocity.x = 0; // Stop horizontal movement if next step is out of bounds
+        }
 
         // Update Position
         currentPos.x += velocity.x * delta;

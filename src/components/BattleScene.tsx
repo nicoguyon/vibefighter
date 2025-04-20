@@ -160,6 +160,26 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     const [p1Ready, setP1Ready] = useState(false);
     const [p2Ready, setP2Ready] = useState(false);
 
+    // --- Create materials for the side walls (AFTER texture state) ---
+    const leftWallMaterial = useMemo(() => {
+        if (!loadedBackgroundTexture) return null;
+
+        // Clone the texture to avoid modifying the original used by the main background
+        const mirroredTexture = loadedBackgroundTexture.clone();
+        mirroredTexture.wrapS = THREE.MirroredRepeatWrapping; // Use mirrored wrapping horizontally
+        mirroredTexture.wrapT = THREE.RepeatWrapping;        // Repeat vertically
+        mirroredTexture.repeat.set(1, 1);  // Reset repeat
+        mirroredTexture.offset.set(1, 0);  // Start sampling from the right edge (U=1)
+        mirroredTexture.needsUpdate = true; // Important: Signal the texture needs update
+
+        return new THREE.MeshBasicMaterial({
+            map: mirroredTexture,
+            side: THREE.DoubleSide,
+            transparent: false,
+            depthWrite: false, // Keep behind other objects
+        });
+    }, [loadedBackgroundTexture]); // Recompute only when the texture loads/changes
+
     // --- Effect to signal readiness (Textures AND Characters) ---
     useEffect(() => {
         if (loadedBackgroundTexture && loadedFloorTexture && p1Ready && p2Ready && !sceneReadySignaled.current) {
@@ -213,14 +233,6 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
         const { camera } = state;
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
-
-        // --- Boundary Clamping (Runs always) ---
-        if (p1Group) {
-            p1Group.position.x = THREE.MathUtils.clamp(p1Group.position.x, MIN_X, MAX_X);
-        }
-        if (p2Group) {
-            p2Group.position.x = THREE.MathUtils.clamp(p2Group.position.x, MIN_X, MAX_X);
-        }
 
         if (p1Group && p2Group) {
             const p1Wrapper = player1Ref.current!.getModelWrapper();
@@ -361,6 +373,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                  target={[0, CAM_LOOKAT_Y, 0]} // Keep initial target reasonable
              />
              {loadedBackgroundTexture && (
+                 <>
                  <mesh position={[0, 45/7, -10]} rotation={[0, 0, 0]}>
                      <planeGeometry args={[30, 90/7]} />
                      <meshBasicMaterial
@@ -370,6 +383,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                          depthWrite={false} // Keep behind other objects
                      />
                  </mesh>
+                 </>
              )}
 
             {/* Player Characters - Remove onStanceReached prop */}
@@ -425,6 +439,20 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
             <ambientLight intensity={0.6} />
             <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
             <directionalLight position={[-10, 10, -5]} intensity={0.5} />
+
+            {/* Left Side Wall */}
+            {leftWallMaterial && (
+                <mesh position={[-15, 45/7, 0]} rotation={[0, Math.PI / 2, 0]} material={leftWallMaterial}>
+                    <planeGeometry args={[20, 90/7]} />
+                </mesh>
+            )}
+
+            {/* Right Side Wall */}
+            {leftWallMaterial && (
+                <mesh position={[15, 45/7, 0]} rotation={[0, -Math.PI / 2, 0]} material={leftWallMaterial}>
+                    <planeGeometry args={[20, 90/7]} />
+                </mesh>
+            )}
         </Suspense>
     );
 }); // Close memo wrapper
