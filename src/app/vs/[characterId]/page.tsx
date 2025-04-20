@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'; // Use useParams for cli
 import Image from 'next/image';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase/client';
+import { playSoundEffect } from '@/utils/playSoundEffect'; // Import the utility
 
 interface Character {
     id: string;
@@ -30,6 +31,8 @@ const ensureAbsoluteUrl = (url: string | null): string | null => {
     }
     return url;
 };
+
+const CONFIRM_SOUND_URL = '/sounds/effects/confirm.mp3'; // Define sound path
 
 export default function VsPage() {
     const params = useParams();
@@ -233,6 +236,7 @@ export default function VsPage() {
 
      // 4. Handle Reroll
      const handleReroll = () => {
+         playSoundEffect(CONFIRM_SOUND_URL); // Play sound
          console.log("Rerolling opponent...");
         // Clear existing animation/audio
         if (animationTimeoutRef.current) {
@@ -251,6 +255,7 @@ export default function VsPage() {
 
     // --- Location Modal Handlers ---
     const handleOpenLocationModal = () => {
+        playSoundEffect(CONFIRM_SOUND_URL); // Play sound
         setShowLocationModal(true);
         // Reset previous generation state when opening
         setGeneratedLocationUrl(null);
@@ -272,6 +277,7 @@ export default function VsPage() {
     };
 
     const handleGenerateLocation = async () => {
+        playSoundEffect(CONFIRM_SOUND_URL); // Play sound
         if (!locationPrompt.trim()) {
             setLocationGenerationError("Please enter a location description.");
             return;
@@ -331,6 +337,7 @@ export default function VsPage() {
 
     // --- NEW: Handle Selecting an Existing Location ---
     const handleSelectExistingLocation = (location: Location) => {
+        playSoundEffect(CONFIRM_SOUND_URL); // Play sound
         console.log("Selected existing location:", location.id, location.name); // Use name
         setSelectedExistingLocation(location);
         setConfirmedLocationId(location.id);
@@ -339,6 +346,7 @@ export default function VsPage() {
     };
 
     const handleConfirmLocation = () => {
+        playSoundEffect(CONFIRM_SOUND_URL); // Play sound
         // Ensure we have all IDs needed
         if (!confirmedLocationId) { // Check if an ID is confirmed (either generated or selected)
              // Maybe show an error message in the modal instead of alert

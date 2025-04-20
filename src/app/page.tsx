@@ -1,36 +1,43 @@
 "use client";
 
-import { useEffect } from 'react';
+import { useEffect, useContext } from 'react';
 import Image from "next/image";
-import { useRouter } from 'next/navigation'; // Import useRouter
-import { useAudio } from '@/contexts/AudioContext'; // Import useAudio
+import { useRouter } from 'next/navigation';
+import { AudioContext } from '@/contexts/AudioContext';
+import React from 'react';
+import { playSoundEffect } from '@/utils/playSoundEffect';
+
+const START_SOUND_URL = '/sounds/effects/start.mp3';
 
 export default function Home() {
-  const router = useRouter(); // Initialize router
-  const { startPlayback } = useAudio(); // Get startPlayback function
+  const router = useRouter();
+  const audioContext = useContext(AudioContext);
 
-  // Function to handle interaction (click or Enter)
-  const handleInteraction = () => {
-    startPlayback(); // Start the audio
-    router.push('/select'); // Navigate
-  };
+  if (!audioContext) {
+    console.warn("Home Page: AudioContext not available yet.");
+  }
 
-  // Effect to handle 'Enter' key press
+  const startPlayback = audioContext ? audioContext.startPlayback : () => console.warn('startPlayback called before context ready');
+
+  const handleInteraction = React.useCallback(() => {
+    playSoundEffect(START_SOUND_URL);
+    startPlayback();
+    router.push('/select');
+  }, [startPlayback, router]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Enter') {
-        handleInteraction(); // Call the combined handler
+        handleInteraction();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handleInteraction]); // Add handleInteraction to dependency array
+  }, [handleInteraction]);
 
   return (
-    // Adjusted main container for direct centering
     <main className="flex min-h-screen flex-col items-center justify-center p-4">
        <div className="text-center cursor-pointer group" onClick={handleInteraction}>
          <Image
@@ -39,10 +46,9 @@ export default function Home() {
            width={600}
            height={300}
            priority
-           className="mb-12 mx-auto transition-transform duration-200 group-hover:scale-105" // Subtle hover effect
+           className="mb-12 mx-auto transition-transform duration-200 group-hover:scale-105"
          />
-         {/* Use logo colors for the text */}
-         <p className="text-3xl blink text-logo-yellow drop-shadow-[2px_2px_0_rgba(0,0,0,0.8)]"> 
+         <p className="text-3xl blink text-logo-yellow drop-shadow-[2px_2px_0_rgba(0,0,0,0.8)]">
            Press Enter Key
          </p>
          <p className="text-xl text-arcade-white mt-2">
@@ -50,7 +56,5 @@ export default function Home() {
          </p>
        </div>
      </main>
-    // Removed the outer div and footer from the original template structure
-    // Keep the layout clean for the intro
   );
 }

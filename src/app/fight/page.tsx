@@ -1,10 +1,11 @@
 "use client";
 
-import React, { Suspense, useState, useEffect } from 'react';
+import React, { Suspense, useState, useEffect, useContext } from 'react';
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase/client';
+import { AudioContext } from '@/contexts/AudioContext';
 
 // Dynamically import the BattleScene component with SSR disabled
 const BattleScene = dynamic(
@@ -27,6 +28,7 @@ interface CharacterData {
     id: string;
     name: string;
     modelUrl: string | null;
+    nameAudioUrl: string | null;
 }
 
 interface LocationData {
@@ -53,19 +55,20 @@ async function getResourceData(id: string, resourceType: 'character' | 'location
         if (resourceType === 'character') {
             const { data, error } = await supabase
                 .from('characters')
-                .select('name, model_glb_url')
+                .select('name, model_glb_url, name_audio_url')
                 .eq('id', id)
                 .single();
 
             if (error) throw error;
             if (!data?.model_glb_url || !data?.name) throw new Error("Missing name or model_glb_url");
 
-            console.log(`[FightPage] Fetched Character: ${data.name}`);
+            console.log(`[FightPage] Fetched Character: ${data.name} (Audio URL: ${!!data.name_audio_url})`);
             return {
                 type: 'character',
                 id,
                 name: data.name,
-                modelUrl: ensureAbsoluteUrl(data.model_glb_url)
+                modelUrl: ensureAbsoluteUrl(data.model_glb_url),
+                nameAudioUrl: ensureAbsoluteUrl(data.name_audio_url)
             };
         } else if (resourceType === 'location') {
              const { data, error } = await supabase
@@ -107,6 +110,27 @@ export default function FightPage() {
     const [locationData, setLocationData] = useState<LocationData | null>(null); // Add location state
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+
+    // Get audio context
+    const audioContext = useContext(AudioContext);
+
+    // Effect to switch music mode on mount and unmount
+    useEffect(() => {
+        if (!audioContext) {
+            console.warn("[FightPage] AudioContext not found.");
+            return;
+        }
+
+        console.log("[FightPage] Mounting - Setting music mode to 'fight'");
+        audioContext.setMusicMode('fight');
+
+        // Cleanup function to run when component unmounts
+        return () => {
+            console.log("[FightPage] Unmounting - Setting music mode back to 'default'");
+            // Check context again in cleanup in case it becomes undefined somehow (unlikely)
+            audioContext?.setMusicMode('default');
+        };
+    }, [audioContext]); // Depend on audioContext to ensure it's available
 
     useEffect(() => {
         // Check all required IDs
@@ -194,6 +218,8 @@ export default function FightPage() {
                 player2ModelUrl={player2Data.modelUrl}
                 player1Name={player1Data.name}
                 player2Name={player2Data.name} 
+                player1NameAudioUrl={player1Data.nameAudioUrl}
+                player2NameAudioUrl={player2Data.nameAudioUrl}
                 backgroundImageUrl={locationData.backgroundImageUrl}
                 floorTextureUrl={locationData.floorTextureUrl}
             />

@@ -1,11 +1,18 @@
 "use client";
 
-import React from 'react';
-import { useAudio } from '../contexts/AudioContext';
+import React, { useContext } from 'react';
+import { AudioContext } from '../contexts/AudioContext';
 import { Volume2, VolumeX } from 'lucide-react'; // Using lucide-react icons
 
 export const MuteButton: React.FC = () => {
-  const { isMuted, toggleMute } = useAudio();
+  const audioContext = useContext(AudioContext);
+
+  if (!audioContext) {
+    console.warn("MuteButton: AudioContext not found.");
+    return null;
+  }
+
+  const { isMuted, toggleMute } = audioContext;
 
   return (
     <button

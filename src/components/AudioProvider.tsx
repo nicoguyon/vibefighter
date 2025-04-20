@@ -1,157 +1,237 @@
 "use client";
 
 import React, { useState, useEffect, useRef, ReactNode, useCallback } from 'react';
-import { AudioContext } from '../contexts/AudioContext';
+import { AudioContext, MusicMode } from '../contexts/AudioContext';
 
 interface AudioProviderProps {
   children: ReactNode;
 }
 
-const musicFiles = [
-  '/music/screens/Arcade Royale.mp3',
-  '/music/screens/Final Battle Fever.mp3',
-  '/music/screens/Fight the Night.mp3',
-  '/music/screens/Pixel Dreams.mp3',
-  '/music/screens/Pixel Hearts Beat Together.mp3',
-  '/music/screens/Pixelated Battle Cry 2.mp3',
-  '/music/screens/Pixelated Battle Cry.mp3',
-  '/music/screens/Pixelated Battleground 2.mp3',
-  '/music/screens/Pixelated Battleground.mp3',
-  '/music/screens/Pixelated Fight Tonight.mp3',
-  '/music/screens/Pixelated Glory.mp3',
-];
+// Type for the fetched playlists
+interface Playlists {
+    default: string[];
+    fight: string[];
+}
+
+// Helper (keep this)
+const getRandomTrackIndex = (playlist: string[], currentIndex: number | null): number => {
+    if (playlist.length === 0) return -1; // Return -1 if empty
+    if (playlist.length === 1) return 0;
+    if (currentIndex === null || currentIndex === -1) return Math.floor(Math.random() * playlist.length);
+
+    let nextIndex;
+    do {
+        nextIndex = Math.floor(Math.random() * playlist.length);
+    } while (nextIndex === currentIndex);
+    return nextIndex;
+};
+
+const MUSIC_VOLUME = 0.6; // Define desired volume level (60%)
 
 export const AudioProvider: React.FC<AudioProviderProps> = ({ children }) => {
-  const [currentTrackIndex, setCurrentTrackIndex] = useState<number | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [hasInteracted, setHasInteracted] = useState(false);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+    const [playlists, setPlaylists] = useState<Playlists>({ default: [], fight: [] });
+    const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(true);
+    const [playlistError, setPlaylistError] = useState<string | null>(null);
 
-  useEffect(() => {
-    audioRef.current = new Audio();
-    const initialIndex = Math.floor(Math.random() * musicFiles.length);
-    setCurrentTrackIndex(initialIndex);
+    const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(-1); // Start with invalid index
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isMuted, setIsMuted] = useState(false);
+    const [hasInteracted, setHasInteracted] = useState(false);
+    const [musicMode, setMusicMode] = useState<MusicMode>('default');
+    const audioRef = useRef<HTMLAudioElement | null>(null);
+    // No longer need currentPlaylistRef, will derive from state
 
-    const handleTrackEnd = () => {
-      console.log("Track ended, selecting next track...");
-      setCurrentTrackIndex(prevIndex => {
-          if (prevIndex === null) return 0;
-          let nextIndex;
-          do {
-            nextIndex = Math.floor(Math.random() * musicFiles.length);
-          } while (nextIndex === prevIndex && musicFiles.length > 1);
-          console.log("Next track index:", nextIndex);
-          return nextIndex;
-      });
-    };
-
-    audioRef.current.addEventListener('ended', handleTrackEnd);
-
-    return () => {
-      audioRef.current?.removeEventListener('ended', handleTrackEnd);
-      audioRef.current?.pause();
-      audioRef.current = null;
-      console.log("AudioProvider unmounted, cleaning up.");
-    };
-  }, []);
-
-  useEffect(() => {
-    if (audioRef.current && currentTrackIndex !== null) {
-      const newSrc = musicFiles[currentTrackIndex];
-      console.log("Effect running: Loading track", currentTrackIndex, newSrc);
-
-      if (audioRef.current.src !== window.location.origin + newSrc) {
-         console.log("Setting new src:", newSrc);
-         if (!audioRef.current.paused) {
-             audioRef.current.pause();
-         }
-         audioRef.current.src = newSrc;
-      }
-
-      if (hasInteracted && !isMuted) {
-          console.log("Effect condition: Auto-Play check (Interacted and not Muted)");
-          if (audioRef.current.paused) {
-              console.log("Effect action: Attempting auto-play/resume.");
-              const playPromise = audioRef.current.play();
-              if (playPromise !== undefined) {
-                playPromise.then(() => {
-                  console.log("Effect success: Auto-playback started/resumed for track:", currentTrackIndex);
-                  setIsPlaying(true);
-                }).catch(error => {
-                  if (error.name !== 'AbortError') {
-                     console.error(`Effect error: Auto-playback failed for track ${currentTrackIndex}:`, error);
-                     setIsPlaying(false);
-                  } else {
-                     console.log("Effect info: Auto-play promise aborted (likely due to rapid change)");
-                  }
+    // Fetch playlists on mount
+    useEffect(() => {
+        const fetchPlaylists = async () => {
+            setIsLoadingPlaylists(true);
+            setPlaylistError(null);
+            try {
+                console.log("[AudioProvider] Fetching playlists from API...");
+                const response = await fetch('/api/music-files');
+                if (!response.ok) {
+                    throw new Error(`API request failed with status ${response.status}`);
+                }
+                const data: Playlists = await response.json();
+                 console.log("[AudioProvider] Playlists fetched:", data);
+                 if (!data.default || !data.fight) {
+                     throw new Error("Invalid playlist data format received from API");
+                 }
+                 // Basic validation: ensure arrays exist
+                setPlaylists({
+                    default: Array.isArray(data.default) ? data.default : [],
+                    fight: Array.isArray(data.fight) ? data.fight : []
                 });
-              }
-          } else {
-             console.log("Effect info: Already playing, ensuring state.");
-             setIsPlaying(true);
-          }
-      } else {
-          console.log("Effect condition: Not auto-playing (Muted or Not Interacted)");
-          if (audioRef.current.paused) {
-             setIsPlaying(false);
-          }
-      }
-    }
-  }, [currentTrackIndex, hasInteracted]);
+            } catch (error: any) {
+                console.error("[AudioProvider] Failed to fetch playlists:", error);
+                setPlaylistError(error.message || "Unknown error fetching playlists");
+                 // Keep empty playlists on error? Or set to null? Using empty arrays for now.
+                 setPlaylists({ default: [], fight: [] });
+            } finally {
+                setIsLoadingPlaylists(false);
+            }
+        };
 
-  const startPlayback = useCallback(() => {
-      if (!hasInteracted) {
-        console.log("User interaction detected, setting hasInteracted=true");
-        setHasInteracted(true);
-      }
-  }, [hasInteracted]);
+        fetchPlaylists();
+    }, []);
 
-  const toggleMute = () => {
-      const becomingMuted = !isMuted;
-      console.log(`Toggling mute state. Becoming ${becomingMuted ? 'Muted' : 'Unmuted'}`);
-      setIsMuted(becomingMuted);
-
-      if (audioRef.current) {
-          if (becomingMuted) {
-              if (!audioRef.current.paused) {
-                  console.log("Muting: Pausing audio.");
-                  audioRef.current.pause();
-                  setIsPlaying(false);
-              } else {
+    // Update track index when playlists load or mode changes
+    useEffect(() => {
+        if (!isLoadingPlaylists && playlistError === null) {
+            const currentPlaylist = musicMode === 'fight' ? playlists.fight : playlists.default;
+            console.log(`[AudioProvider] Playlists loaded or mode changed (${musicMode}). Selecting initial track.`);
+            // Stop current playback before potentially changing index/playlist
+            if (audioRef.current && !audioRef.current.paused) {
+                 console.log("[AudioProvider] Pausing audio due to playlist load/mode change.");
+                 audioRef.current.pause();
                  setIsPlaying(false);
-              }
-          } else {
-              if (hasInteracted && audioRef.current.paused) {
-                  console.log("Unmuting: Resuming audio.");
-                  const playPromise = audioRef.current.play();
-                   if (playPromise !== undefined) {
-                      playPromise.then(() => {
-                          console.log("Playback resumed by unmute.");
-                          setIsPlaying(true);
-                      }).catch(error => {
-                          if (error.name !== 'AbortError') {
-                             console.error("Error resuming playback on unmute:", error);
-                             setIsPlaying(false);
-                          }
-                      });
-                   }
-              } else if (!hasInteracted) {
-                  console.log("Unmuting: Not resuming yet (awaiting interaction).");
-                  setIsPlaying(false);
-              } else if (!audioRef.current.paused){
-                   console.log("Unmuting: Was already playing (state should be correct).");
-                   setIsPlaying(true);
-              }
-          }
-      }
-  };
+             }
+            setCurrentTrackIndex(getRandomTrackIndex(currentPlaylist, null)); // Get a new random index
+        }
+         // Handle error case? Maybe set index to -1 if playlists fail to load.
+         else if (playlistError !== null) {
+             setCurrentTrackIndex(-1);
+         }
 
-  const currentTrack = currentTrackIndex !== null ? musicFiles[currentTrackIndex] : null;
+    }, [isLoadingPlaylists, playlistError, musicMode, playlists]); // Rerun when loading finishes, mode changes, or playlists potentially update (though playlists state itself shouldn't change after initial load without a refresh trigger)
 
-  return (
-    <AudioContext.Provider value={{ isPlaying, isMuted, toggleMute, startPlayback, currentTrack }}>
-      {children}
-    </AudioContext.Provider>
-  );
+
+    // Initialize Audio element, set volume, and setup ended listener
+    useEffect(() => {
+        audioRef.current = new Audio();
+        audioRef.current.volume = MUSIC_VOLUME; // Set initial volume
+        console.log(`[AudioProvider] Audio element created. Volume set to ${MUSIC_VOLUME}`);
+
+        const handleTrackEnd = () => {
+            if (isLoadingPlaylists || playlistError) return; // Don't process if playlists aren't ready
+
+            const currentPlaylist = musicMode === 'fight' ? playlists.fight : playlists.default;
+            console.log("[AudioProvider] Track ended, selecting next track for mode:", musicMode);
+            setCurrentTrackIndex(prevIndex => getRandomTrackIndex(currentPlaylist, prevIndex));
+        };
+
+        audioRef.current.addEventListener('ended', handleTrackEnd);
+
+        return () => {
+            console.log("[AudioProvider] Unmounting. Cleaning up audio element.");
+            audioRef.current?.removeEventListener('ended', handleTrackEnd);
+            audioRef.current?.pause();
+            audioRef.current = null;
+        };
+        // Run only once on mount
+    }, [isLoadingPlaylists, playlistError, musicMode, playlists]); // Need dependencies that affect currentPlaylist inside handler
+
+    // Effect to load and play the current track
+    useEffect(() => {
+        const currentPlaylist = musicMode === 'fight' ? playlists.fight : playlists.default;
+
+        if (isLoadingPlaylists || playlistError || currentTrackIndex < 0 || currentTrackIndex >= currentPlaylist.length || !audioRef.current) {
+             console.log(`[AudioProvider] Playback effect skipped (Loading: ${isLoadingPlaylists}, Error: ${playlistError}, Index: ${currentTrackIndex}, PlaylistLen: ${currentPlaylist.length}, AudioRef: ${!!audioRef.current})`);
+              // Ensure audio is stopped if conditions aren't met
+              if(audioRef.current && !audioRef.current.paused){
+                   audioRef.current.pause();
+                   setIsPlaying(false);
+              }
+             return;
+        }
+
+        // Ensure volume is set correctly before playing or changing src
+        audioRef.current.volume = MUSIC_VOLUME; 
+
+        const newSrc = currentPlaylist[currentTrackIndex];
+        const currentFullSrc = audioRef.current.src;
+        const newFullSrc = new URL(newSrc, window.location.origin).href;
+
+        console.log(`[AudioProvider] Playback effect running. Mode: ${musicMode}, Index: ${currentTrackIndex}, Src: ${newSrc}, Interacted: ${hasInteracted}, Muted: ${isMuted}`);
+
+        let needsSrcUpdate = false;
+        if (currentFullSrc !== newFullSrc) {
+            console.log(`[AudioProvider] Src mismatch. Updating src.`);
+            if (!audioRef.current.paused) {
+                audioRef.current.pause();
+                setIsPlaying(false);
+            }
+            audioRef.current.src = newSrc;
+            needsSrcUpdate = true;
+        }
+
+        // --- Playback Logic --- //
+        if (hasInteracted && !isMuted) {
+            if (needsSrcUpdate || audioRef.current.paused) {
+                console.log("[AudioProvider] Attempting playback (Interacted & Unmuted).");
+                 if (audioRef.current.currentSrc || audioRef.current.src) {
+                    const playPromise = audioRef.current.play();
+                    if (playPromise !== undefined) {
+                        playPromise.then(() => {
+                            console.log("[AudioProvider] Playback started/resumed.");
+                            setIsPlaying(true);
+                        }).catch(error => {
+                            if (error.name !== 'AbortError') {
+                                console.error(`[AudioProvider] Playback error:`, error);
+                                setIsPlaying(false);
+                            } else {
+                                console.log("[AudioProvider] Playback promise aborted.");
+                            }
+                        });
+                    }
+                 } else {
+                    console.warn("[AudioProvider] Playback skipped: src not loaded.");
+                 }
+            } else {
+                if (!isPlaying) setIsPlaying(true);
+                 console.log("[AudioProvider] Already playing.");
+            }
+        } else {
+            if (!audioRef.current.paused) {
+                console.log("[AudioProvider] Pausing playback (Muted or Not Interacted).");
+                audioRef.current.pause();
+                setIsPlaying(false);
+            } else {
+                 if (isPlaying) setIsPlaying(false);
+                 console.log("[AudioProvider] Already paused.");
+            }
+        }
+    }, [currentTrackIndex, hasInteracted, isMuted, musicMode, playlists, isLoadingPlaylists, playlistError]); // dependencies
+
+
+    // --- Context Provided Functions ---
+    const startPlayback = useCallback(() => {
+        if (!hasInteracted) {
+            console.log("[AudioProvider] Interaction detected.");
+            setHasInteracted(true);
+        }
+    }, [hasInteracted]);
+
+    const toggleMute = useCallback(() => {
+         console.log(`[AudioProvider] Toggling mute.`);
+         setIsMuted(prev => !prev);
+    }, []);
+
+    const setMode = useCallback((mode: MusicMode) => {
+        console.log(`[AudioProvider] Setting music mode: ${mode}`);
+        setMusicMode(mode);
+    }, []);
+
+
+    const currentTrack = !isLoadingPlaylists && playlistError === null && currentTrackIndex >= 0
+        ? (musicMode === 'fight' ? playlists.fight : playlists.default)[currentTrackIndex]
+        : null;
+
+    // Maybe provide loading/error state via context if needed by consumers?
+    const contextValue = {
+        isPlaying,
+        isMuted,
+        toggleMute,
+        startPlayback,
+        currentTrack,
+        setMusicMode: setMode,
+        isLoadingPlaylists, // Expose loading state
+        playlistError      // Expose error state
+    };
+
+    return (
+        <AudioContext.Provider value={contextValue}>
+            {children}
+        </AudioContext.Provider>
+    );
 }; 

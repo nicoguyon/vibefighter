@@ -6,6 +6,9 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation'; // Import useRouter
+import { playSoundEffect } from '@/utils/playSoundEffect'; // Import the utility
+
+const CONFIRM_SOUND_URL = '/sounds/effects/confirm.mp3'; // Define sound path
 
 interface Character {
     id: string;
@@ -67,7 +70,9 @@ export default function SelectExistingCharacter() {
     }, []);
 
     const handleSelectCharacter = (character: Character) => {
-        // Only allow selection if model is ready
+        // Play sound first, regardless of whether character is ready
+        playSoundEffect(CONFIRM_SOUND_URL);
+        
         if (character.status === 'complete' && character.model_glb_url) {
             setSelectedCharacter(character);
         } else {
@@ -83,6 +88,7 @@ export default function SelectExistingCharacter() {
 
     // Handler to navigate to the VS screen
     const handleConfirmFighter = () => {
+        playSoundEffect(CONFIRM_SOUND_URL); // Play sound
         if (selectedCharacter) {
             console.log(`Confirming fighter: ${selectedCharacter.name} (${selectedCharacter.id})`);
             const targetUrl = `/vs/${selectedCharacter.id}`;

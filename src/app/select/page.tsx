@@ -2,16 +2,21 @@
 
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
+import { playSoundEffect } from '@/utils/playSoundEffect';
+
+const CONFIRM_SOUND_URL = '/sounds/effects/confirm.mp3';
 
 export default function SelectCharacter() {
   const router = useRouter();
 
   const goToCreate = () => {
+    playSoundEffect(CONFIRM_SOUND_URL);
     router.push('/create');
   };
 
   // Function to navigate to the new select existing page
   const goToSelectExisting = () => {
+    playSoundEffect(CONFIRM_SOUND_URL);
     router.push('/select-existing');
   };
 

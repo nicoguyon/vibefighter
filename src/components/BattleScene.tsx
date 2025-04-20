@@ -1,4 +1,4 @@
-import React, { Suspense, useRef, useEffect, useState, useMemo, memo } from 'react';
+import React, { Suspense, useRef, useEffect, useState, useMemo, memo, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 // Removed Environment, no OrbitControls needed
@@ -50,6 +50,23 @@ const INTRO_ANIMATION_TYPES = ['Hello', 'ArmsCrossed', 'Bow']; // Example types
 // Helper function to pick a random intro animation
 const getRandomIntroAnimation = () => INTRO_ANIMATION_TYPES[Math.floor(Math.random() * INTRO_ANIMATION_TYPES.length)];
 
+// Helper function to play sound
+const playSound = (url: string | null, volume: number = 1.0) => {
+    if (!url) {
+        console.warn("[playSound] Attempted to play null URL.");
+        return;
+    }
+    try {
+        const audio = new Audio(url);
+        audio.volume = Math.max(0, Math.min(1, volume)); // Clamp volume between 0 and 1
+        audio.play().catch(error => {
+            console.error(`[playSound] Error playing sound from ${url}:`, error);
+        });
+    } catch (error) {
+        console.error(`[playSound] Error creating Audio object for ${url}:`, error);
+    }
+};
+
 // REMOVED Local definition of PlayerCharacterHandle
 // export interface PlayerCharacterHandle {
 //     getMainGroup: () => THREE.Group | null;
@@ -62,11 +79,12 @@ const getRandomIntroAnimation = () => INTRO_ANIMATION_TYPES[Math.floor(Math.rand
 interface BattleSceneProps {
     player1ModelUrl: string;
     player2ModelUrl: string;
-    player1Name: string; // Add names to props
+    player1Name: string;
     player2Name: string;
-    backgroundImageUrl: string; // Add background URL prop
-    // Add floorTextureUrl prop back
-    floorTextureUrl: string;    
+    player1NameAudioUrl: string | null; // Add P1 audio URL
+    player2NameAudioUrl: string | null; // Add P2 audio URL
+    backgroundImageUrl: string;
+    floorTextureUrl: string;
 }
 
 // Remove the physics-based GroundPlane component definition
@@ -463,15 +481,14 @@ export function BattleScene({
     player2ModelUrl,
     player1Name,
     player2Name,
+    player1NameAudioUrl, 
+    player2NameAudioUrl, 
     backgroundImageUrl,
-    floorTextureUrl // Add prop back
+    floorTextureUrl
 }: BattleSceneProps) {
     const [player1Health, setPlayer1Health] = useState(MAX_HEALTH);
     const [player2Health, setPlayer2Health] = useState(MAX_HEALTH);
-    // Rename isAIActive state to reflect its purpose - enabling/disabling based on fight phase
-    const [isAIEnabled, setIsAIEnabled] = useState(false); // Default to disabled
-
-    // --- NEW: Fight Phase State ---
+    const [isAIEnabled, setIsAIEnabled] = useState(false);
     const [fightPhase, setFightPhase] = useState<FightPhase>('LOADING');
     const [p1IntroAnim, setP1IntroAnim] = useState<string | null>(null);
     const [p2IntroAnim, setP2IntroAnim] = useState<string | null>(null);
@@ -480,38 +497,48 @@ export function BattleScene({
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
 
-    // --- NEW: Effect to manage Fight Phase transitions (Reintroduce PRE_FIGHT timeout) ---
+    const versusSoundUrl = '/sounds/voices/versus.mp3';
+    const readySoundUrl = '/sounds/voices/ready.mp3';
+    const fightSoundUrl = '/sounds/voices/fight.mp3';
+
+    // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
         console.log(`[BattleScene] Fight Phase Changed: ${fightPhase}`);
         let phaseTimer: NodeJS.Timeout | undefined;
+        let soundDelayTimer: NodeJS.Timeout | undefined;
+
+        // Clear any pending sound delay timer from the previous phase execution
+        // (Ensure the cleanup function below handles this correctly)
 
         switch (fightPhase) {
             case 'INTRO_START':
-                // Choose intro animations
                 setP1IntroAnim(getRandomIntroAnimation());
                 setP2IntroAnim(getRandomIntroAnimation());
-                 // Give a brief moment for things to settle before P1 intro
                 phaseTimer = setTimeout(() => setFightPhase('INTRO_P1'), 500);
                 break;
             case 'INTRO_P1':
-                // Player 1 intro duration
-                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000);
+                playSound(player1NameAudioUrl); // Play P1 name immediately
+                // Delay playing "versus" sound
+                soundDelayTimer = setTimeout(() => {
+                    console.log("[BattleScene] Playing delayed versus sound (2s delay).");
+                    playSound(versusSoundUrl);
+                }, 2000); // INCREASED DELAY to 2000ms (2 seconds)
+                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000); // Keep total phase duration the same for now
                 break;
             case 'INTRO_P2':
-                // Player 2 intro duration
+                playSound(player2NameAudioUrl); // Play P2 name immediately
                 phaseTimer = setTimeout(() => setFightPhase('PRE_FIGHT'), 4000);
                 break;
             case 'PRE_FIGHT':
-                // Reintroduce Timeout - Give 2.2s for camera/stance to settle
                 console.log("[BattleScene] Entered PRE_FIGHT. Starting 2.2s timer for READY phase...");
                 phaseTimer = setTimeout(() => {
-                     // Check if still in PRE_FIGHT before transitioning (safety)
-                     if (fightPhase === 'PRE_FIGHT') { 
+                     if (fightPhase === 'PRE_FIGHT') {
                           setFightPhase('READY');
                      }
-                 }, 2200); 
+                 }, 2200);
                 break;
             case 'READY':
+                playSound(readySoundUrl);
                 setShowReadyText(true);
                 phaseTimer = setTimeout(() => {
                     setShowReadyText(false);
@@ -519,12 +546,12 @@ export function BattleScene({
                 }, 1000);
                 break;
             case 'FIGHT':
+                playSound(fightSoundUrl);
                 setShowFightText(true);
                 setIsAIEnabled(true);
                 phaseTimer = setTimeout(() => setShowFightText(false), 1000);
                 break;
              case 'LOADING':
-                 // Reset state if needed when going back to loading
                  setIsAIEnabled(false);
                  setShowReadyText(false);
                  setShowFightText(false);
@@ -533,8 +560,13 @@ export function BattleScene({
                  break;
         }
 
-        return () => { if (phaseTimer) clearTimeout(phaseTimer); }
-    }, [fightPhase]);
+        // Cleanup function: Clear ALL timers associated with this effect instance
+        return () => {
+             console.log("[BattleScene] Cleanup: Clearing timers for phase:", fightPhase);
+             if (phaseTimer) clearTimeout(phaseTimer);
+             if (soundDelayTimer) clearTimeout(soundDelayTimer); // Ensure sound delay timer is cleared
+        }
+    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl]);
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>
@@ -545,15 +577,12 @@ export function BattleScene({
                     camera={{ position: [CAM_X, CAM_Y, MIN_CAM_Z + 0.2], fov: INITIAL_FOV }}
                     style={{ height: '100%', width: '100%', position: 'absolute', top: 0, left: 0, zIndex: 1 }}
                 >
-                    {/* Pass down fight phase and related state */}
                     <SceneContent
                         player1ModelUrl={player1ModelUrl}
                         player2ModelUrl={player2ModelUrl}
-                        // Pass isAIEnabled state
                         isAIActive={isAIEnabled}
                         backgroundImageUrl={backgroundImageUrl}
                         floorTextureUrl={floorTextureUrl}
-                        // --- NEW PROPS ---
                         fightPhase={fightPhase}
                         onSceneReady={() => {
                              if (fightPhase === 'LOADING') {
@@ -577,7 +606,7 @@ export function BattleScene({
                     <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} />
                 </div>
 
-                 {/* --- NEW: Ready/Fight Text Overlay --- */}
+                 {/* --- Ready/Fight Text Overlay --- */}
                  <div style={{
                      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
                      zIndex: 3, pointerEvents: 'none', textAlign: 'center'
@@ -586,13 +615,6 @@ export function BattleScene({
                      {showFightText && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
                  </div>
 
-                 {/* Removed Debug Button */}
-                 {/* <button
-                     onClick={() => {}} // No toggle function anymore
-                     style={{position: 'absolute', bottom: '10px', left: '10px', zIndex: 3, pointerEvents: 'all'}}
-                 >
-                     Toggle AI (State: {isAIEnabled ? 'ON' : 'OFF'})
-                 </button> */}
             </>
         </BattleStateContext.Provider>
     );

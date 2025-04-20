@@ -5,6 +5,9 @@ import Image from "next/image"; // Keep if you plan to display images here
 import { useRouter } from 'next/navigation';
 import { v4 as uuidv4 } from 'uuid'; // Import uuid
 import { supabase } from '@/lib/supabase/client'; // Import the client helper
+import { playSoundEffect } from '@/utils/playSoundEffect'; // Import the utility
+
+const CONFIRM_SOUND_URL = '/sounds/effects/confirm.mp3'; // Define sound path
 
 // Interface for concept images (adjust as needed)
 interface ConceptImage {
@@ -51,6 +54,7 @@ export default function CreateCharacter() {
 
   // Placeholder handlers for API calls (Moved from Home page)
   const handleGenerateConcepts = async () => {
+    playSoundEffect(CONFIRM_SOUND_URL); // Play sound
     setError(null);
     setIsGeneratingConcepts(true);
     setConceptImages([]); // Clear previous images
@@ -98,6 +102,7 @@ export default function CreateCharacter() {
   };
 
   const handleReroll = async () => {
+    playSoundEffect(CONFIRM_SOUND_URL); // Play sound
     // Reset selection and images before regenerating
     setSelectedConceptIndex(null);
     setConceptImages([]); 
@@ -156,6 +161,7 @@ export default function CreateCharacter() {
 
   // Renamed: Starts background generation (model + maybe rig later) when proceeding from concept select
   const startBackgroundGeneration = async () => {
+    playSoundEffect(CONFIRM_SOUND_URL); // Play sound
     if (selectedConceptIndex === null) {
       setError("Please select a concept first.");
       return;
@@ -210,6 +216,7 @@ export default function CreateCharacter() {
 
   // Saves the name and marks it as confirmed, DOES NOT NAVIGATE
   const handleNameFinalization = async () => {
+    playSoundEffect(CONFIRM_SOUND_URL); // Play sound
     if (characterName.trim().length === 0) {
       setError("Please enter or select a name.");
       return;
@@ -472,6 +479,7 @@ export default function CreateCharacter() {
 
   // Updated Back Handler to stop polling
    const handleGoBack = () => {
+     playSoundEffect(CONFIRM_SOUND_URL); // Play sound (using confirm for now)
      setError(null);
      stopPolling(); // Stop polling if user goes back
      setIsGeneratingConcepts(false); // Reset loading state
