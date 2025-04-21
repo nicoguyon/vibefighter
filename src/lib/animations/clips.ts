@@ -334,16 +334,20 @@ export function createWalkCycleClip(
     return new THREE.AnimationClip(clipName, duration, tracks);
 } 
 
+// Define a type for the optional start pose data
+export type StartPose = Record<string, { quat: THREE.Quaternion }>;
+
 /**
  * Creates a right punch animation.
- * Starts from stance, adds a prep pose, punches, returns towards stance.
+ * Starts from a provided startPose (or current if null), locks non-essential bones, returns arms to stance/initial.
  */
 export function createRightPunchClip(
-    skeleton: THREE.Skeleton | null, 
-    initialPose: Record<string, InitialPoseData>, 
+    skeleton: THREE.Skeleton | null,
+    initialPose: Record<string, InitialPoseData>,
     stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
-    clipName: string = 'RightPunch', 
-    duration: number = 0.6 // Total duration: prep + extend + retract
+    startPose: StartPose | null = null, // <-- ADDED ARGUMENT
+    clipName: string = 'RightPunch',
+    duration: number = 0.6 
 ): THREE.AnimationClip | null {
     if (!skeleton || Object.keys(initialPose).length === 0) {
         console.warn("[createRightPunchClip] Missing skeleton or initial pose.");
@@ -353,115 +357,139 @@ export function createRightPunchClip(
     const tracks: THREE.KeyframeTrack[] = [];
     // Define timings for the 4 keyframes
     const prepTime = duration * 0.1;
-    const apexTime = duration * 0.35; // Original extendDuration
+    const apexTime = duration * 0.35;
     const times = [0, prepTime, apexTime, duration]; // Start, Prep, Apex, End
-    
+
     const deg = THREE.MathUtils.degToRad;
     const tmpEuler = new THREE.Euler();
     const tmpQuat = new THREE.Quaternion();
+    // No longer need tmpQuat2
 
     // Key bones involved
     const punchArm = ['R_Upperarm', 'R_Forearm', 'R_Hand'];
     const guardArm = ['L_Upperarm', 'L_Forearm', 'L_Hand'];
-    const torsoBones = ['Pelvis', 'Spine01', 'Spine02']; 
+    const torsoBones = ['Pelvis', 'Spine01', 'Spine02']; // Include Pelvis for twist propagation if needed
     const headBone = 'Head';
     const rightLegBones = ['R_Thigh', 'R_Calf', 'R_Foot'];
+    const leftLegBones = ['L_Thigh', 'L_Calf', 'L_Foot'];
+    const legBones = [...rightLegBones, ...leftLegBones];
 
     skeleton.bones.forEach(bone => {
         const boneName = bone.name;
         const initial = initialPose[boneName];
-        if (!initial) return; 
+        if (!initial) return;
 
-        const stanceInfo = stancePoseTargets[boneName];
-        let baseQuat = new THREE.Quaternion(); 
-        let stanceEulerOrder: EulerOrder = 'XYZ'; 
-
-        // Determine base pose and Euler order 
-        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
-             stanceEulerOrder = stanceInfo.eulerOrder;
-             tmpEuler.set(deg(stanceInfo.rotation.x ?? 0), deg(stanceInfo.rotation.y ?? 0), deg(stanceInfo.rotation.z ?? 0), stanceEulerOrder);
-             baseQuat.setFromEuler(tmpEuler);
+        // --- Get STARTING pose --- 
+        let currentQuat: THREE.Quaternion;
+        if (startPose && startPose[boneName]) {
+            currentQuat = startPose[boneName].quat.clone(); // Use passed start pose
         } else {
-            baseQuat.copy(initial.quat); 
-            if (punchArm.includes(boneName) || guardArm.includes(boneName)) stanceEulerOrder = 'XYZ';
-            else if ([...torsoBones, headBone].includes(boneName)) stanceEulerOrder = 'XYZ';
-            else if (rightLegBones.includes(boneName)) stanceEulerOrder = 'YXZ';
+            console.warn(`[createRightPunchClip] Start pose not found for ${boneName}, using live skeleton pose.`);
+            currentQuat = bone.quaternion.clone(); // Fallback to live pose
         }
         
-        const baseEuler = new THREE.Euler().setFromQuaternion(baseQuat, stanceEulerOrder);
+        // Determine a suitable Euler order
+        let eulerOrder: EulerOrder = 'XYZ';
+        const stanceInfo = stancePoseTargets[boneName];
+        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
+            eulerOrder = stanceInfo.eulerOrder;
+        } else if (punchArm.includes(boneName) || guardArm.includes(boneName)) {
+            eulerOrder = 'XYZ';
+        } else if (legBones.includes(boneName)) { // Correctly check combined legBones
+            eulerOrder = 'YXZ';
+        } // Default 'XYZ' for others
+        const currentEuler = new THREE.Euler().setFromQuaternion(currentQuat, eulerOrder);
+
+        // --- Determine TARGET Stance/Initial pose (only used for Arms' Frame 3) ---
+        let targetEndQuat = new THREE.Quaternion();
+        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
+             tmpEuler.set(deg(stanceInfo.rotation.x ?? 0), deg(stanceInfo.rotation.y ?? 0), deg(stanceInfo.rotation.z ?? 0), stanceInfo.eulerOrder);
+             targetEndQuat.setFromEuler(tmpEuler);
+        } else {
+            targetEndQuat.copy(initial.quat);
+        }
+
         const keyframeValues: number[] = [];
 
-        // --- Calculate Keyframes --- 
-        
-        // Frame 0 (time 0): Base Stance Pose
-        keyframeValues.push(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
+        // --- Calculate Keyframes ---
 
-        // Frame 1 (time prepTime): Preparatory Pose (Wind-up)
-        let prepEuler = new THREE.Euler().copy(baseEuler);
-        if (punchArm.includes(boneName)) {
-            // Bring arm slightly higher and more bent
-             if (boneName === 'R_Upperarm') {
-                 prepEuler.x += deg(5);  // Elbow slightly back
-                 prepEuler.z += deg(15); // Raise shoulder/arm slightly
-             }
-             if (boneName === 'R_Forearm') {
-                 prepEuler.z += deg(60); // Bend elbow more significantly
-             }
-             if (boneName === 'R_Hand') {
-                 prepEuler.z += deg(10); // Slight wrist bend
-             }
-        } 
-        // Keep other bones at base pose for this frame
-        tmpQuat.setFromEuler(prepEuler);
-        keyframeValues.push(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w);
+        if (legBones.includes(boneName)) {
+            // --- LOCK Leg Bones ---
+            // Force all keyframes to the starting pose
+            const quat = currentQuat;
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 0
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 1 (Prep)
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 2 (Apex)
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 3 (End)
+        } else {
+            // --- Animate Other Bones ---
 
-        // Frame 2 (time apexTime): Punch Apex (using screenshot values)
-        let apexEuler = new THREE.Euler().copy(baseEuler); // Start from base for apex calc
-        if (punchArm.includes(boneName)) {
-            // --- Set PUNCH Arm Bones Directly from Screenshot Values (XYZ Order) ---
-            if (boneName === 'R_Upperarm') {
-                apexEuler.set(deg(33), deg(80), deg(68), 'XYZ');
+            // Determine the final pose for non-leg bones
+            let finalQuat = new THREE.Quaternion();
+            const shouldReturnToStance = punchArm.includes(boneName) || guardArm.includes(boneName);
+            if (shouldReturnToStance) {
+                finalQuat.copy(targetEndQuat); // Arms return to stance/initial
+            } else {
+                finalQuat.copy(currentQuat); // Torso, Head etc. return to current start pose
             }
-            if (boneName === 'R_Forearm') {
-                apexEuler.set(deg(121), deg(-107), deg(108), 'XYZ');
+
+            // Frame 0 (time 0): CURRENT Pose
+            keyframeValues.push(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
+
+            // Frame 1 (time prepTime): Preparatory Pose
+            let prepQuat = new THREE.Quaternion();
+            if (punchArm.includes(boneName)) {
+                // Calculate prep RELATIVE to current for punching arm
+                let prepEuler = new THREE.Euler().copy(currentEuler);
+                if (boneName === 'R_Upperarm') {
+                     prepEuler.x += deg(5);
+                     prepEuler.z += deg(15);
+                 }
+                 else if (boneName === 'R_Forearm') {
+                     prepEuler.z += deg(60);
+                 }
+                 else if (boneName === 'R_Hand') {
+                     prepEuler.z += deg(10);
+                 }
+                 prepQuat.setFromEuler(prepEuler.reorder(eulerOrder));
+            } else {
+                 // Other non-leg bones (Guard Arm, Torso, Head): HOLD current pose for prep frame
+                 prepQuat.copy(currentQuat);
             }
-             if (boneName === 'R_Hand') {
-                apexEuler.set(deg(-15), deg(67), deg(-17), 'XYZ');
+            keyframeValues.push(prepQuat.x, prepQuat.y, prepQuat.z, prepQuat.w);
+
+            // Frame 2 (time apexTime): Punch Apex
+            let apexQuat = new THREE.Quaternion();
+            if (punchArm.includes(boneName)) {
+                // --- Use ABSOLUTE targets for punch arm ---
+                if (boneName === 'R_Upperarm') { tmpEuler.set(deg(-20), deg(78), deg(38), 'XYZ'); }
+                else if (boneName === 'R_Forearm') { tmpEuler.set(deg(95), deg(-92), deg(95), 'XYZ'); }
+                else if (boneName === 'R_Hand') { tmpEuler.set(deg(-10), deg(50), deg(-10), 'XYZ'); }
+                 apexQuat.setFromEuler(tmpEuler.reorder('XYZ'));
+
+            } else if (guardArm.includes(boneName)) {
+                // --- Use ABSOLUTE targets for guard arm ---
+                 if (boneName === 'L_Upperarm') { tmpEuler.set(deg(15), deg(-40), deg(-72), 'XYZ'); }
+                 else if (boneName === 'L_Forearm') { tmpEuler.set(deg(173), deg(66), deg(-55), 'XYZ'); }
+                 else if (boneName === 'L_Hand') { tmpEuler.set(deg(0), deg(0), deg(0), 'XYZ'); }
+                apexQuat.setFromEuler(tmpEuler.reorder('XYZ'));
+
+            } else if (torsoBones.includes(boneName)) {
+                // Rotate torso RELATIVE to current pose
+                tmpEuler.copy(currentEuler);
+                if (boneName.includes('Spine01')) tmpEuler.y += deg(70); // Apply twist relative to current Y
+                if (boneName.includes('Spine')) tmpEuler.x += deg(5); // Apply lean relative to current X
+                apexQuat.setFromEuler(tmpEuler.reorder(eulerOrder));
+
+            } else {
+                 // Other non-leg/non-arm/non-torso bones (Head etc.): HOLD current pose during apex
+                 apexQuat.copy(currentQuat);
             }
-        } else if (guardArm.includes(boneName)) {
-            // --- Set GUARD Arm Bones Directly from Screenshot Values (XYZ Order) ---
-             if (boneName === 'L_Upperarm') {
-                apexEuler.set(deg(15), deg(-40), deg(-72), 'XYZ');
-            }
-            if (boneName === 'L_Forearm') {
-                apexEuler.set(deg(173), deg(66), deg(-55), 'XYZ');
-            }
-            if (boneName === 'L_Hand') {
-                apexEuler.set(deg(0), deg(0), deg(0), 'XYZ'); // From screenshot
-            }
-        } else if (torsoBones.includes(boneName)) {
-            // Rotate torso into punch (relative change from base)
-            apexEuler.y += deg(15); // Reduced Twist right
-            if (boneName.includes('Spine')) apexEuler.x += deg(5); // Slight forward lean
-        } else if (rightLegBones.includes(boneName)) {
-            // Slight step/shift forward with right leg (relative change from base)
-             if (boneName === 'R_Thigh') {
-                 apexEuler.x -= deg(5); // Small step forward
-                 apexEuler.y += deg(3); // Slightly turn in
-             }
-             if (boneName === 'R_Calf') {
-                 apexEuler.x -= deg(5); // Adjust calf bend slightly
-             }
-             if (boneName === 'R_Foot') {
-                 apexEuler.x += deg(5); // Keep foot somewhat level
-             }
+            keyframeValues.push(apexQuat.x, apexQuat.y, apexQuat.z, apexQuat.w);
+
+            // Frame 3 (time duration): Return towards determined final pose
+            keyframeValues.push(finalQuat.x, finalQuat.y, finalQuat.z, finalQuat.w);
         }
-        // Else: Bone not explicitly animated at apex, keep base pose (copied earlier)
-        tmpQuat.setFromEuler(apexEuler); 
-        keyframeValues.push(tmpQuat.x, tmpQuat.y, tmpQuat.z, tmpQuat.w);
-
-        // Frame 3 (time duration): Return towards Base Stance Pose
-        keyframeValues.push(baseQuat.x, baseQuat.y, baseQuat.z, baseQuat.w);
 
         // Add track for this bone
         tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
@@ -469,7 +497,7 @@ export function createRightPunchClip(
 
     if (tracks.length === 0) { console.warn(`[createRightPunchClip] No tracks generated for ${clipName}.`); return null; }
     return new THREE.AnimationClip(clipName, duration, tracks);
-} 
+}
 
 // Define and export target rotations for the block pose
 export const blockTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
@@ -1287,3 +1315,163 @@ export function createBowClip(
     if (tracks.length === 0) { console.warn(`[createBowClip] No tracks generated for ${clipName}.`); return null; }
     return new THREE.AnimationClip(clipName, totalDuration, tracks);
 } 
+
+// --- NEW: Left Punch ---
+
+/**
+ * Creates a left punch animation.
+ * Starts from a provided startPose (or current if null), locks non-essential bones, returns arms to stance/initial.
+ */
+export function createLeftPunchClip(
+    skeleton: THREE.Skeleton | null,
+    initialPose: Record<string, InitialPoseData>,
+    stancePoseTargets: Record<string, { rotation?: { x?: number; y?: number; z?: number }, eulerOrder?: EulerOrder }>, 
+    startPose: StartPose | null = null,
+    clipName: string = 'LeftPunch',
+    duration: number = 0.6 
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createLeftPunchClip] Missing skeleton or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    // Define timings for the 4 keyframes
+    const prepTime = duration * 0.1;
+    const apexTime = duration * 0.35;
+    const times = [0, prepTime, apexTime, duration]; // Start, Prep, Apex, End
+
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+
+    // Key bones involved (Swapped L/R)
+    const punchArm = ['L_Upperarm', 'L_Forearm', 'L_Hand'];
+    const guardArm = ['R_Upperarm', 'R_Forearm', 'R_Hand'];
+    const torsoBones = ['Pelvis', 'Spine01', 'Spine02']; 
+    const headBone = 'Head';
+    const rightLegBones = ['R_Thigh', 'R_Calf', 'R_Foot'];
+    const leftLegBones = ['L_Thigh', 'L_Calf', 'L_Foot'];
+    const legBones = [...rightLegBones, ...leftLegBones];
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return;
+
+        // --- Get STARTING pose --- 
+        let currentQuat: THREE.Quaternion;
+        if (startPose && startPose[boneName]) {
+            currentQuat = startPose[boneName].quat.clone(); // Use passed start pose
+        } else {
+            console.warn(`[createLeftPunchClip] Start pose not found for ${boneName}, using live skeleton pose.`);
+            currentQuat = bone.quaternion.clone(); // Fallback to live pose
+        }
+        
+        // Determine a suitable Euler order
+        let eulerOrder: EulerOrder = 'XYZ';
+        const stanceInfo = stancePoseTargets[boneName];
+        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
+            eulerOrder = stanceInfo.eulerOrder;
+        } else if (punchArm.includes(boneName) || guardArm.includes(boneName)) {
+            eulerOrder = 'XYZ';
+        } else if (legBones.includes(boneName)) { 
+            eulerOrder = 'YXZ';
+        } 
+        const currentEuler = new THREE.Euler().setFromQuaternion(currentQuat, eulerOrder);
+
+        // --- Determine TARGET Stance/Initial pose (only used for Arms' Frame 3) ---
+        let targetEndQuat = new THREE.Quaternion();
+        if (stanceInfo?.rotation && stanceInfo.eulerOrder) {
+             tmpEuler.set(deg(stanceInfo.rotation.x ?? 0), deg(stanceInfo.rotation.y ?? 0), deg(stanceInfo.rotation.z ?? 0), stanceInfo.eulerOrder);
+             targetEndQuat.setFromEuler(tmpEuler);
+        } else {
+            targetEndQuat.copy(initial.quat);
+        }
+
+        const keyframeValues: number[] = [];
+
+        // --- Calculate Keyframes ---
+
+        if (legBones.includes(boneName)) {
+            // --- LOCK Leg Bones ---
+            const quat = currentQuat;
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 0
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 1 (Prep)
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 2 (Apex)
+            keyframeValues.push(quat.x, quat.y, quat.z, quat.w); // Frame 3 (End)
+        } else {
+            // --- Animate Other Bones ---
+            let finalQuat = new THREE.Quaternion();
+            const shouldReturnToStance = punchArm.includes(boneName) || guardArm.includes(boneName);
+            if (shouldReturnToStance) {
+                finalQuat.copy(targetEndQuat); // Arms return to stance/initial
+            } else {
+                finalQuat.copy(currentQuat); // Torso, Head etc. return to current start pose
+            }
+
+            // Frame 0 (time 0): CURRENT Pose
+            keyframeValues.push(currentQuat.x, currentQuat.y, currentQuat.z, currentQuat.w);
+
+            // Frame 1 (time prepTime): Preparatory Pose
+            let prepQuat = new THREE.Quaternion();
+            if (punchArm.includes(boneName)) {
+                // Calculate prep RELATIVE to current for punching arm (Left)
+                let prepEuler = new THREE.Euler().copy(currentEuler);
+                if (boneName === 'L_Upperarm') {
+                     prepEuler.x += deg(5); // Same lean
+                     prepEuler.z -= deg(15); // Mirror Z rotation (pull back left arm)
+                 }
+                 else if (boneName === 'L_Forearm') {
+                     prepEuler.z -= deg(60); // Mirror Z rotation (bend elbow in)
+                 }
+                 else if (boneName === 'L_Hand') {
+                     prepEuler.z -= deg(10); // Mirror Z rotation
+                 }
+                 prepQuat.setFromEuler(prepEuler.reorder(eulerOrder));
+            } else {
+                 // Other non-leg bones (Guard Arm, Torso, Head): HOLD current pose for prep frame
+                 prepQuat.copy(currentQuat);
+            }
+            keyframeValues.push(prepQuat.x, prepQuat.y, prepQuat.z, prepQuat.w);
+
+            // Frame 2 (time apexTime): Punch Apex
+            let apexQuat = new THREE.Quaternion();
+            if (punchArm.includes(boneName)) {
+                // --- Use ABSOLUTE targets for punch arm (Left) - MIRRORED Y/Z from right ---
+                if (boneName === 'L_Upperarm') { tmpEuler.set(deg(-20), deg(-78), deg(-38), 'XYZ'); } // Mirrored Y/Z
+                else if (boneName === 'L_Forearm') { tmpEuler.set(deg(95), deg(92), deg(-95), 'XYZ'); } // Mirrored Y/Z
+                else if (boneName === 'L_Hand') { tmpEuler.set(deg(-10), deg(-50), deg(10), 'XYZ'); } // Mirrored Y/Z
+                 apexQuat.setFromEuler(tmpEuler.reorder('XYZ'));
+
+            } else if (guardArm.includes(boneName)) {
+                // --- Use ABSOLUTE targets for guard arm (Right) - MIRRORED Y/Z from left guard ---
+                 if (boneName === 'R_Upperarm') { tmpEuler.set(deg(15), deg(40), deg(72), 'XYZ'); } // Mirrored Y/Z
+                 else if (boneName === 'R_Forearm') { tmpEuler.set(deg(173), deg(-66), deg(55), 'XYZ'); } // Mirrored Y/Z
+                 else if (boneName === 'R_Hand') { tmpEuler.set(deg(0), deg(0), deg(0), 'XYZ'); }
+                apexQuat.setFromEuler(tmpEuler.reorder('XYZ'));
+
+            } else if (torsoBones.includes(boneName)) {
+                // Rotate torso RELATIVE to current pose (MIRRORED Y twist)
+                tmpEuler.copy(currentEuler);
+                if (boneName.includes('Spine01')) tmpEuler.y -= deg(70); // Apply twist opposite way
+                if (boneName.includes('Spine')) tmpEuler.x += deg(5); // Keep lean same
+                apexQuat.setFromEuler(tmpEuler.reorder(eulerOrder));
+
+            } else {
+                 // Other non-leg/non-arm/non-torso bones (Head etc.): HOLD current pose during apex
+                 apexQuat.copy(currentQuat);
+            }
+            keyframeValues.push(apexQuat.x, apexQuat.y, apexQuat.z, apexQuat.w);
+
+            // Frame 3 (time duration): Return towards determined final pose
+            keyframeValues.push(finalQuat.x, finalQuat.y, finalQuat.z, finalQuat.w);
+        }
+
+        // Add track for this bone
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
+    });
+
+    if (tracks.length === 0) { console.warn(`[createLeftPunchClip] No tracks generated for ${clipName}.`); return null; }
+    return new THREE.AnimationClip(clipName, duration, tracks);
+}

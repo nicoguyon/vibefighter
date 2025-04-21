@@ -10,9 +10,11 @@ import {
     createResetPoseClip, 
     createIdleBreathClip, 
     createRightPunchClip, // Import punch clip
+    createLeftPunchClip, // <-- ADDED IMPORT
     type EulerOrder, 
     type InitialPoseData, 
-    defaultFightStanceTargets
+    defaultFightStanceTargets,
+    type StartPose // <-- ADD IMPORT BACK
 } from '../../../lib/animations/clips';
 
 // --- NEW: Component to manage WebGL Context Cleanup ---
@@ -144,9 +146,9 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
     const [resetPoseAction, setResetPoseAction] = useState<THREE.AnimationAction | null>(null);
     const [fightStanceAction, setFightStanceAction] = useState<THREE.AnimationAction | null>(null);
     const [idleBreathAction, setIdleBreathAction] = useState<THREE.AnimationAction | null>(null); 
-    const [rightPunchAction, setRightPunchAction] = useState<THREE.AnimationAction | null>(null); // <-- New State for punch
     const [audioPlayed, setAudioPlayed] = useState(false); // Track audio playback
     const punchIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for punch interval timer
+    const comboTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for combo restart timer
     const stanceTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for initial stance delay timeout
     // const { gl } = useThree(); // <<< REMOVE useThree from here
 
@@ -162,22 +164,82 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
         }
     }, [nameAudioUrl, audioPlayed]);
 
-    // --- Play Punch Function (Stable Callback) --- 
-    const playPunch = useCallback(() => {
-        if (!rightPunchAction || !mixer || !idleBreathAction) {
-            console.warn("[Viewer] playPunch: Cannot play punch - Action, Mixer or IdleAction missing. Scheduling retry.");
-             if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
-             punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000); 
+    // --- Play Specific Punch Function --- 
+    const playSpecificPunch = useCallback((punchType: 'right' | 'left') => {
+        console.log(`[Viewer] Attempting to play ${punchType} punch.`);
+        // Check necessary components
+        if (!mixer || !skeleton || !idleBreathAction || Object.keys(initialPose).length === 0) {
+            console.warn(`[Viewer] playSpecificPunch: Cannot play ${punchType} punch - Missing Mixer, Skeleton, IdleAction, or InitialPose.`);
+            // Don't automatically retry here, let the sequence handle it.
             return;
         }
-        console.log("[Viewer] playPunch: Triggering Punch Action..."); 
-        idleBreathAction.stop(); 
-        rightPunchAction.reset().fadeIn(0.2).play();
-    }, [rightPunchAction, idleBreathAction, mixer]); 
+        
+        console.log(`[Viewer] playSpecificPunch: Capturing pose for ${punchType} punch...`);
+        const punchTypeToCreate = punchType; // Use the argument
+        const clipName = punchTypeToCreate === 'right' ? 'RightPunch' : 'LeftPunch';
+        console.log(`[Viewer] playSpecificPunch: Creating ${punchTypeToCreate} punch clip with name ${clipName}...`);
+        
+        // 1. Capture Current Pose
+        const currentPose: StartPose = {};
+        skeleton.bones.forEach(bone => {
+            currentPose[bone.name] = { quat: bone.quaternion.clone() };
+        });
+        
+        // 2. Create Clip Dynamically based on type
+        const punchClip = punchTypeToCreate === 'right' 
+           ? createRightPunchClip(
+                 skeleton,
+                 initialPose,
+                 fightStanceTargets,
+                 currentPose, // Use the captured pose
+                 clipName // Use the correct clip name
+             ) 
+           : createLeftPunchClip(
+                 skeleton,
+                 initialPose,
+                 fightStanceTargets,
+                 currentPose, // Use the captured pose
+                 clipName // Use the correct clip name
+             );
 
-    // --- Animation Finished Listener (Stable Callback) --- 
+        console.log(`[Viewer] playSpecificPunch: Clip creation result for ${clipName}:`, punchClip); // Log clip result
+        if (!punchClip) {
+            console.error(`[Viewer] playSpecificPunch: Failed to create dynamic ${punchTypeToCreate} punch clip.`);
+            // Schedule retry if clip creation fails
+            if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
+            punchIntervalRef.current = setTimeout(() => playSpecificPunch(punchType), Math.random() * 2000 + 3000); 
+            return;
+        }
+
+        // 3. Create and Play Action
+        const punchAction = mixer.clipAction(punchClip);
+        punchAction.setLoop(THREE.LoopOnce, 1);
+        punchAction.clampWhenFinished = true; // Clamp at the end (important? Maybe not needed if idle restarts)
+
+        console.log(`[Viewer] playSpecificPunch: Playing dynamic ${punchTypeToCreate} punch action (${clipName}).`);
+        idleBreathAction.stop(); // Stop idle breath FIRST
+        punchAction.reset().fadeIn(0.2).play(); // Play the dynamic action
+
+    // Depend on components needed for dynamic creation & idle action
+    }, [mixer, skeleton, initialPose, fightStanceTargets, idleBreathAction]); 
+
+    // --- Function to Start the Right-Left Combo ---
+    const startRightLeftCombo = useCallback(() => {
+        console.log("[Viewer] Starting Right-Left Combo sequence.");
+        if (comboTimeoutRef.current) {
+             clearTimeout(comboTimeoutRef.current); // Clear any pending restart timer
+             comboTimeoutRef.current = null;
+        }
+        playSpecificPunch('right'); // Always start combo with Right
+        
+        // No need to schedule the *next* combo start here, 
+        // it will be scheduled when the Left punch finishes.
+
+    }, [playSpecificPunch]);
+
+    // --- Animation Finished Listener (Check Clip Name) --- 
     const onAnimationFinished = useCallback((event: AnimationFinishedEvent) => {
-        console.log(`[Viewer] Animation Finished: ${event.action.getClip().name}`);
+        console.log(`[Viewer] Finished Listener: Detected finished action for clip: ${event.action.getClip().name}`); // Log detected clip name
 
         if (punchIntervalRef.current) {
             console.log("[Viewer] Finished Listener: Clearing existing punch timer.");
@@ -185,20 +247,52 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
             punchIntervalRef.current = null; 
         }
 
-        // Use action state directly
         if (fightStanceAction && event.action === fightStanceAction) {
-            console.log("[Viewer] Finished Listener: Fight Stance Finished. Starting Idle Breath.");
+            console.log("[Viewer] Finished Listener (Stance): Fight Stance Finished. Starting Idle Breath.");
             idleBreathAction?.reset().setEffectiveWeight(1).fadeIn(0.3).play(); 
-            console.log("[Viewer] Finished Listener: Scheduling FIRST punch timer.");
-            punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000);
-        } else if (rightPunchAction && event.action === rightPunchAction) {
-            console.log("[Viewer] Finished Listener: Punch Finished. Returning to Idle Breath.");
-            rightPunchAction.stop(); 
+            if (comboTimeoutRef.current) { clearTimeout(comboTimeoutRef.current); comboTimeoutRef.current = null; } // Clear pending combo restarts
+            console.log("[Viewer] Finished Listener (Stance): Calling startRightLeftCombo for the first time."); 
+            // Use a small delay before the first combo starts after stance
+            comboTimeoutRef.current = setTimeout(startRightLeftCombo, 1500 + Math.random() * 1000); 
+
+        } else if (event.action.getClip().name === 'RightPunch') {
+            console.log("[Viewer] Finished Listener (Right Punch): Playing Left Punch immediately.");
+
+            // --- Cleanup the dynamic Right Punch action ---
+            const finishedAction = event.action;
+            const finishedClip = finishedAction.getClip();
+            finishedAction.stop(); 
+            mixer?.uncacheAction(finishedClip, finishedAction.getRoot());
+            mixer?.uncacheClip(finishedClip);
+            console.log("[Viewer] Finished Listener (Right Punch): Uncached Right Punch action.");
+            // ---------------------------------------------
+
+            playSpecificPunch('left'); // Play Left punch right away
+
+        } else if (event.action.getClip().name === 'LeftPunch') { 
+            console.log("[Viewer] Finished Listener (Left Punch): Combo part finished. Cleaning up, returning to Idle, Scheduling next combo."); // Clarify log source
+            
+            // --- Cleanup the dynamic action --- 
+            const finishedAction = event.action;
+            const finishedClip = finishedAction.getClip();
+            
+            // Stop is likely redundant as LoopOnce is used, but doesn't hurt
+            finishedAction.stop(); 
+            
+            // Uncache action and clip to prevent memory leaks
+            mixer?.uncacheAction(finishedClip, finishedAction.getRoot());
+            mixer?.uncacheClip(finishedClip);
+            console.log(`[Viewer] Finished Listener (Left Punch): Uncached dynamic action for clip: ${finishedClip.name}`); // Clarify log source
+            // ----------------------------------
+            
             idleBreathAction?.reset().setEffectiveWeight(1).fadeIn(0.3).play(); 
-            console.log("[Viewer] Finished Listener: Scheduling NEXT punch timer.");
-            punchIntervalRef.current = setTimeout(playPunch, Math.random() * 2000 + 3000);
+            // Schedule the start of the NEXT combo after a pause
+            const pauseDuration = 2000 + Math.random() * 1500; // 2-3.5 second pause
+            console.log(`[Viewer] Finished Listener (Left Punch): Scheduling NEXT combo start in ${pauseDuration.toFixed(0)}ms.`); 
+            if (comboTimeoutRef.current) { clearTimeout(comboTimeoutRef.current); } // Clear any existing timer just in case
+            comboTimeoutRef.current = setTimeout(startRightLeftCombo, pauseDuration);
         }
-    }, [fightStanceAction, idleBreathAction, rightPunchAction, playPunch]); // Depend on actions and playPunch
+    }, [fightStanceAction, idleBreathAction, playSpecificPunch, startRightLeftCombo, mixer]); 
 
     // --- Create Animation Actions --- 
     useEffect(() => {
@@ -228,13 +322,6 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
                 setIdleBreathAction(action);
             } else { console.error("[Viewer] Failed to create Idle Breath."); allActionsCreated = false; }
 
-            const punchClip = createRightPunchClip(skeleton, initialPose, fightStanceTargets, 'RightPunch', 0.6);
-            if (punchClip) {
-                const action = mixer.clipAction(punchClip).setLoop(THREE.LoopOnce, 1);
-                action.clampWhenFinished = true;
-                setRightPunchAction(action);
-            } else { console.error("[Viewer] Failed to create Right Punch."); allActionsCreated = false; }
-
             if (allActionsCreated) {
                  console.log("[Viewer] All actions created successfully.");
                  setActionsReady(true); 
@@ -244,7 +331,7 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
          return () => {
              setActionsReady(false);
          };
-    }, [mixer, skeleton, initialPose, fightStanceTargets]); 
+    }, [mixer, skeleton, initialPose, fightStanceTargets, setFightStanceAction, setResetPoseAction, setIdleBreathAction]); // Corrected dependency array
 
      // --- Add/Remove Mixer Listener --- 
      useEffect(() => {
@@ -273,7 +360,6 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
              stanceTimeoutRef.current = setTimeout(() => {
                  console.log("[Viewer] Timeout finished: Playing Fight Stance!");
                  idleBreathAction?.stop();
-                 rightPunchAction?.stop();
                  resetPoseAction?.stop();
                  fightStanceAction.reset().fadeIn(0.3).play();
             }, 500); 
@@ -289,7 +375,7 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
                  console.log("[Viewer] Cleared pending stance timeout.");
             }
         };
-    }, [actionsReady, fightStanceAction, idleBreathAction, rightPunchAction, resetPoseAction]); 
+    }, [actionsReady, fightStanceAction, idleBreathAction, resetPoseAction]); // Corrected dependency array
 
      // --- General Cleanup Effect on Unmount ( REMOVED gl.dispose() from here) --- 
      useEffect(() => {
@@ -299,6 +385,7 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
             console.log("[Viewer] Component unmounting: Cleaning up timeouts and listeners.");
             // Clear any pending timeouts (like punchTimerRef, stanceTimeoutRef)
             if (punchIntervalRef.current) clearTimeout(punchIntervalRef.current);
+            if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current); // Clear combo timer
             if (stanceTimeoutRef.current) clearTimeout(stanceTimeoutRef.current);
             
             // Stop all animations and remove listeners if mixer exists
