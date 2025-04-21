@@ -19,7 +19,7 @@ const HealthBar: React.FC<HealthBarProps> = ({
 
     // Basic styling - apply external style prop here
     const barStyle: React.CSSProperties = {
-        width: '300px', // Adjusted width
+        width: '45%', // <-- CHANGED: Make width almost half the screen
         backgroundColor: 'rgba(0, 0, 0, 0.7)',
         padding: '8px', // Slightly more padding
         borderRadius: '5px',
@@ -35,7 +35,7 @@ const HealthBar: React.FC<HealthBarProps> = ({
         fontWeight: 'bold',
         marginBottom: '4px', // More spacing
         textShadow: '1px 1px 2px black',
-        fontFamily: 'sans-serif', // Basic font
+        fontFamily: "var(--font-pixel)", // <-- CHANGED: Use CSS variable for pixel font
     };
 
     const barContainerStyle: React.CSSProperties = {

@@ -110,9 +110,16 @@ export default function FightPage() {
     const [locationData, setLocationData] = useState<LocationData | null>(null); // Add location state
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [isSceneVisible, setIsSceneVisible] = useState(false); // New state for scene visibility
 
     // Get audio context
     const audioContext = useContext(AudioContext);
+
+    // Callback to make the scene visible
+    const handleSceneVisible = React.useCallback(() => {
+        console.log("[FightPage] Scene is ready to be visible (INTRO_P1 starting).");
+        setIsSceneVisible(true);
+    }, []);
 
     // Effect to switch music mode on mount and unmount
     useEffect(() => {
@@ -189,7 +196,7 @@ export default function FightPage() {
 
     // --- Render based on state ---
     if (isLoading) {
-        return <LoadingFallback message="Loading Character Models..." />;
+        return <LoadingFallback message="Loading Fight Data..." />;
     }
 
     if (error) {
@@ -206,24 +213,30 @@ export default function FightPage() {
 
     // Check all required data objects and their properties (including floor texture)
     if (!player1Data?.modelUrl || !player2Data?.modelUrl || !locationData?.backgroundImageUrl || !locationData?.floorTextureUrl) {
-        return <LoadingFallback message="Preparing Scene Assets..." />;
+        // This case might not be strictly necessary anymore if isLoading handles the initial data fetch,
+        // but can remain as a fallback check.
+        return <LoadingFallback message="Validating Assets..." />;
     }
 
-    // --- Render the Scene ---
+    // --- Render the Scene OR Loading Fallback ---
     return (
-        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' /* Needed for absolute positioning of health bars */ }}>
-            {/* Pass names and URLs - guaranteed non-null here after the check */}
-            <BattleScene
-                player1ModelUrl={player1Data.modelUrl}
-                player2ModelUrl={player2Data.modelUrl}
-                player1Name={player1Data.name}
-                player2Name={player2Data.name} 
-                player1NameAudioUrl={player1Data.nameAudioUrl}
-                player2NameAudioUrl={player2Data.nameAudioUrl}
-                backgroundImageUrl={locationData.backgroundImageUrl}
-                floorTextureUrl={locationData.floorTextureUrl}
-            />
-            {/* Health bars will be rendered inside BattleScene's parent div */}
+        <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' }}>
+            {!isSceneVisible && <LoadingFallback message="Preparing Scene..." />}
+            <div style={{ visibility: isSceneVisible ? 'visible' : 'hidden', width: '100%', height: '100%' }}>
+                {/* Pass names, URLs, and the new callback */}
+                <BattleScene
+                    player1ModelUrl={player1Data.modelUrl}
+                    player2ModelUrl={player2Data.modelUrl}
+                    player1Name={player1Data.name}
+                    player2Name={player2Data.name}
+                    player1NameAudioUrl={player1Data.nameAudioUrl}
+                    player2NameAudioUrl={player2Data.nameAudioUrl}
+                    backgroundImageUrl={locationData.backgroundImageUrl}
+                    floorTextureUrl={locationData.floorTextureUrl}
+                    onSceneVisible={handleSceneVisible} // Pass the callback
+                />
+            </div>
+            {/* Health bars will be rendered inside BattleScene's parent div, managed by BattleScene */}
         </div>
     );
 } 

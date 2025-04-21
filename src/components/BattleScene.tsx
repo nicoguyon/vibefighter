@@ -85,6 +85,7 @@ interface BattleSceneProps {
     player2NameAudioUrl: string | null; // Add P2 audio URL
     backgroundImageUrl: string;
     floorTextureUrl: string;
+    onSceneVisible: () => void; // Add callback prop
 }
 
 // Remove the physics-based GroundPlane component definition
@@ -481,10 +482,11 @@ export function BattleScene({
     player2ModelUrl,
     player1Name,
     player2Name,
-    player1NameAudioUrl, 
-    player2NameAudioUrl, 
+    player1NameAudioUrl,
+    player2NameAudioUrl,
     backgroundImageUrl,
-    floorTextureUrl
+    floorTextureUrl,
+    onSceneVisible
 }: BattleSceneProps) {
     const [player1Health, setPlayer1Health] = useState(MAX_HEALTH);
     const [player2Health, setPlayer2Health] = useState(MAX_HEALTH);
@@ -517,6 +519,7 @@ export function BattleScene({
                 phaseTimer = setTimeout(() => setFightPhase('INTRO_P1'), 500);
                 break;
             case 'INTRO_P1':
+                onSceneVisible(); // Call the callback when P1 intro starts
                 playSound(player1NameAudioUrl); // Play P1 name immediately
                 // Delay playing "versus" sound
                 soundDelayTimer = setTimeout(() => {
@@ -566,7 +569,7 @@ export function BattleScene({
              if (phaseTimer) clearTimeout(phaseTimer);
              if (soundDelayTimer) clearTimeout(soundDelayTimer); // Ensure sound delay timer is cleared
         }
-    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl]);
+    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible]);
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>

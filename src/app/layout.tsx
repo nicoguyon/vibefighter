@@ -6,9 +6,6 @@ import { MuteButton } from "@/components/MuteButton";
 export const metadata: Metadata = {
   title: "VibeFighter",
   description: "Create your 90s vibe fighter!",
-  icons: {
-    icon: "/images/favicon.png",
-  },
 };
 
 export default function RootLayout({
