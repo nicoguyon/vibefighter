@@ -413,33 +413,49 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         const triggerStandUp = useCallback(() => {
             const duckAction = actions?.DuckPose;
-            if (!duckAction || !isDuckingRef.current) return;
+            const stanceAction = actions?.GoToFightStance; // Get stance action
+            if (!duckAction || !stanceAction || !isDuckingRef.current) { // Check stance action exists
+                console.warn(`[PlayerCharacter ${initialFacing}] Stand Up prerequisites missing (duckAction=${!!duckAction}, stanceAction=${!!stanceAction}, isDucking=${isDuckingRef.current})`);
+                return;
+            }
 
-            console.log(`[PlayerCharacter ${initialFacing}] Triggering Stand Up (Revised Logic)`);
+            console.log(`[PlayerCharacter ${initialFacing}] Triggering Stand Up (New Logic: Play Stance)`);
             isActionInProgress.current = true;
+            isDuckingRef.current = false; // No longer ducking
+            
+            // 1. Fade out ducking pose
             duckAction.fadeOut(0.2);
-            isDuckingRef.current = false;
 
-            const currentInput = getEffectiveInputState();
+            // 2. Play the transition to stance immediately after starting fade out
+            stanceAction.reset().fadeIn(0.1).play(); // Short fade in for smoothness
 
-            setTimeout(() => {
-                isActionInProgress.current = false;
+            // 3. Set state and potentially play idle *after* stance transition finishes
+            const stanceDuration = stanceAction.getClip().duration;
+            const delay = (stanceDuration + 0.1) * 1000; // Delay slightly longer than stance duration
+
+            // Clear previous timeout if any (belt-and-suspenders)
+            if (stanceTimeoutRef.current) clearTimeout(stanceTimeoutRef.current);
+
+            stanceTimeoutRef.current = setTimeout(() => {
                 const idleAction = actions?.IdleBreath;
+                const currentInput = getEffectiveInputState(); // Check input *now*
 
-                // Log the state values being checked (keeping isInStance for context, though not used in condition)
-                console.log(`[PlayerCharacter ${initialFacing}] Stand Up Timeout Check: isMoving=${isMovingHorizontally.current}, isBlockingInput=${currentInput.block}, hasIdleAction=${!!idleAction}, (wasInStance=${isInStance.current})`);
+                // --- Set state AFTER stance completes --- 
+                isInStance.current = true; // Now definitely in stance
+                isActionInProgress.current = false; // Allow actions
+                console.log(`[PlayerCharacter ${initialFacing}] Stand Up Stance finished. isInStance=${isInStance.current}, isActionInProgress=${isActionInProgress.current}`);
 
-                // --- REMOVED isInStance check from the condition ---
+                // --- Play Idle Breath if conditions met --- 
                 if (!isMovingHorizontally.current && !currentInput.block && idleAction) { 
-                    console.log(`[PlayerCharacter ${initialFacing}] Conditions met (Revised). Playing IdleBreath.`);
+                    console.log(`[PlayerCharacter ${initialFacing}] Conditions met post-stance. Playing IdleBreath.`);
                     idleAction.reset().fadeIn(0.3).play();
-                    // Set stance true AFTER starting idle breath.
-                    isInStance.current = true; 
                 } else {
-                    console.warn(`[PlayerCharacter ${initialFacing}] Conditions NOT met for IdleBreath after stand up (Revised).`);
+                    console.warn(`[PlayerCharacter ${initialFacing}] Conditions NOT met for IdleBreath after stance transition.`);
                 }
-            }, 200);
-        // Remove isInStance from dependency array as it's no longer directly used in the condition logic
+                 stanceTimeoutRef.current = null; // Clear ref after execution
+            }, delay); 
+
+        // Dependencies: actions, getEffectiveInputState, isMovingHorizontally (ref)
         }, [actions, getEffectiveInputState]); 
 
         const triggerKick = useCallback(() => {
