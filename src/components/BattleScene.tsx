@@ -33,7 +33,7 @@ const INTRO_CAMERA_SMOOTH_TIME = 0.4; // Approx time for damping transition
 const BASE_DISTANCE_FACTOR = 0.3;
 const INITIAL_FOV = 50; // Keep FOV constant here for now
 const MAX_HEALTH = 1000; // Define max health
-const PUNCH_DAMAGE = 10; // Damage per hit
+const PUNCH_DAMAGE = 100; // Damage per hit
 const BLOCK_DAMAGE_MULTIPLIER = 0.1; // 10% damage when blocking
 const HIT_DISTANCE = CHARACTER_RADIUS * 2 + 0.3; // Distance threshold for a hit (cylinders touching + small buffer)
 const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position check
@@ -150,6 +150,8 @@ interface SceneContentProps {
     onSceneReady: () => void;
     p1IntroAnim: string | null;
     p2IntroAnim: string | null;
+    player1Health: number;
+    player2Health: number;
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
@@ -163,6 +165,8 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     onSceneReady,
     p1IntroAnim,
     p2IntroAnim,
+    player1Health,
+    player2Health,
 }: SceneContentProps) => {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
@@ -178,6 +182,10 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     const [loadedFloorTexture, setLoadedFloorTexture] = useState<THREE.Texture | null>(null);
     const [p1Ready, setP1Ready] = useState(false);
     const [p2Ready, setP2Ready] = useState(false);
+    const [showReadyText, setShowReadyText] = useState(false);
+    const [showFightText, setShowFightText] = useState(false);
+    const [winnerName, setWinnerName] = useState<string | null>(null);
+    const [showWinnerBanner, setShowWinnerBanner] = useState(false);
 
     // --- Create materials for the side walls (AFTER texture state) ---
     const leftWallMaterial = useMemo(() => {
@@ -250,6 +258,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
 
     useFrame((state, delta) => {
         const { camera } = state;
+        // Refs required for ANY logic below
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
 
@@ -258,70 +267,29 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
             const p2Wrapper = player2Ref.current!.getModelWrapper();
             if (!p1Wrapper || !p2Wrapper) return;
 
-            // --- Set Initial Rotation during PRE_FIGHT --- 
+            // --- Phase-Specific Character Logic ---
             if (fightPhase === 'PRE_FIGHT') {
+                // --- Set Initial Rotation during PRE_FIGHT --- 
                 if (player1Ref.current && p1Wrapper) {
-                    console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P1 Rotation");
+                    // console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P1 Rotation");
                     p1Wrapper.rotation.y = 0; // P1 faces right
                 }
                 if (player2Ref.current && p2Wrapper) {
-                    console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P2 Rotation");
+                    // console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P2 Rotation");
                     p2Wrapper.rotation.y = Math.PI; // P2 faces left
                 }
-            }
+            } else if (fightPhase === 'FIGHT') {
+                const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
+                if (!playersLanded) return; // Don't run fight logic/camera if players haven't landed
 
-            // --- Gated Logic based on Fight Phase ---
-            const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
-
-            // Camera Intro Focus Points
-            // Adjust lookAt Y value for intros
-            const introLookAtY = 0.9;
-            const p1IntroFocusPos = new THREE.Vector3(p1Group.position.x, introLookAtY, p1Group.position.z);
-            const p2IntroFocusPos = new THREE.Vector3(p2Group.position.x, introLookAtY, p2Group.position.z);
-            const introCamDistance = 1.4; // Adjusted distance for frontal view
-            const introCamYOffset = CAM_Y + 0.2; // Raised Y position for intro view
-
-             // --- Phase-Specific Logic ---
-             if (fightPhase === 'INTRO_P1' && camera) {
-                 // Damp towards P1 target position
-                 const p1TargetCamPosIntro = new THREE.Vector3(p1Group.position.x, introCamYOffset, p1Group.position.z + introCamDistance);
-                 camera.position.x = THREE.MathUtils.damp(camera.position.x, p1TargetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.position.y = THREE.MathUtils.damp(camera.position.y, p1TargetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.position.z = THREE.MathUtils.damp(camera.position.z, p1TargetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.lookAt(p1IntroFocusPos); // Keep lookAt instant for now
-                 camera.updateProjectionMatrix();
-
-             } else if (fightPhase === 'INTRO_P2' && camera) {
-                  // Damp towards P2 target position
-                 const p2TargetCamPosIntro = new THREE.Vector3(p2Group.position.x, introCamYOffset, p2Group.position.z + introCamDistance);
-                 camera.position.x = THREE.MathUtils.damp(camera.position.x, p2TargetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.position.y = THREE.MathUtils.damp(camera.position.y, p2TargetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.position.z = THREE.MathUtils.damp(camera.position.z, p2TargetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
-                 camera.lookAt(p2IntroFocusPos);
-                 camera.updateProjectionMatrix();
-
-             } else if (fightPhase === 'PRE_FIGHT' && camera) {
-                // Switch back to LERP for faster visual settling before READY
-                const fightViewMidPointX = (p1Group.position.x + p2Group.position.x) / 2;
-                const fightViewTargetZ = THREE.MathUtils.clamp(MIN_CAM_Z + Math.abs(p1Group.position.x - p2Group.position.x) * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
-                const fightViewTargetPos = new THREE.Vector3(fightViewMidPointX, CAM_Y, fightViewTargetZ);
-                
-                camera.position.x = THREE.MathUtils.lerp(camera.position.x, fightViewTargetPos.x, LERP_FACTOR * 1.5); // Use lerp (maybe slightly faster factor)
-                camera.position.y = THREE.MathUtils.lerp(camera.position.y, fightViewTargetPos.y, LERP_FACTOR * 1.5);
-                camera.position.z = THREE.MathUtils.lerp(camera.position.z, fightViewTargetPos.z, LERP_FACTOR * 1.5);
-                
-                camera.lookAt(fightViewMidPointX, CAM_LOOKAT_Y, 0);
-                camera.updateProjectionMatrix();
-
-             } else if (fightPhase === 'FIGHT' && playersLanded && camera) {
-                // --- FIGHT PHASE LOGIC (Collision, Facing, Dynamic Camera, Hit Detection) ---
-                // Dynamic facing should work correctly now after PRE_FIGHT rotation
+                // --- Character Interaction Logic (Runs during FIGHT) ---
+                // Dynamic Facing
                 let angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
                 let angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
                 const targetP1Rotation = angleP1 - Math.PI / 2;
                 const targetP2Rotation = angleP2 - Math.PI / 2;
 
-                if (!dynamicRotationHasRun.current) { dynamicRotationHasRun.current = true; }
+                // Removed dynamicRotationHasRun ref check as facing is handled continuously
 
                 p1Wrapper.rotation.y = targetP1Rotation;
                 p2Wrapper.rotation.y = targetP2Rotation;
@@ -338,16 +306,6 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                     const correctedP2X = midPointX - (directionP1 * MIN_SEPARATION / 2);
                     player1Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP1X, MIN_X, MAX_X));
                     player2Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP2X, MIN_X, MAX_X));
-                }
-
-                // Dynamic Camera (Only during fight)
-                const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + distX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
-                if (camera) {
-                    const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
-                    camera.position.x = THREE.MathUtils.lerp(camera.position.x, midPointX, LERP_FACTOR);
-                    camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, LERP_FACTOR);
-                    camera.lookAt(midPointX, CAM_LOOKAT_Y, 0);
-                    camera.updateProjectionMatrix();
                 }
 
                 // Hit Detection & Damage (Only during fight)
@@ -371,9 +329,52 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                         setPlayer1Health(h => Math.max(0, h - damage));
                     }
                 }
-             } // End: if (fightPhase === 'FIGHT')
+            }
 
-        } // End: if (p1Group && p2Group)
+            // --- Dynamic Camera Logic (Runs AFTER phase-specific logic, if camera exists) ---
+            if (camera) {
+                // Intro phase camera logic
+                if (fightPhase === 'INTRO_P1' || fightPhase === 'INTRO_P2') {
+                    const introLookAtY = 0.9;
+                    const introCamDistance = 1.4;
+                    const introCamYOffset = CAM_Y + 0.2;
+                    const focusGroup = fightPhase === 'INTRO_P1' ? p1Group : p2Group;
+                    const targetFocusPos = new THREE.Vector3(focusGroup.position.x, introLookAtY, focusGroup.position.z);
+                    const targetCamPosIntro = new THREE.Vector3(focusGroup.position.x, introCamYOffset, focusGroup.position.z + introCamDistance);
+
+                    camera.position.x = THREE.MathUtils.damp(camera.position.x, targetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
+                    camera.position.y = THREE.MathUtils.damp(camera.position.y, targetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
+                    camera.position.z = THREE.MathUtils.damp(camera.position.z, targetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
+                    camera.lookAt(targetFocusPos);
+                }
+                // Pre-Fight camera settles into fight view
+                else if (fightPhase === 'PRE_FIGHT') {
+                    const fightViewMidPointX = (p1Group.position.x + p2Group.position.x) / 2;
+                    const fightViewTargetZ = THREE.MathUtils.clamp(MIN_CAM_Z + Math.abs(p1Group.position.x - p2Group.position.x) * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
+                    const fightViewTargetPos = new THREE.Vector3(fightViewMidPointX, CAM_Y, fightViewTargetZ);
+
+                    camera.position.x = THREE.MathUtils.lerp(camera.position.x, fightViewTargetPos.x, LERP_FACTOR * 1.5);
+                    camera.position.y = THREE.MathUtils.lerp(camera.position.y, fightViewTargetPos.y, LERP_FACTOR * 1.5);
+                    camera.position.z = THREE.MathUtils.lerp(camera.position.z, fightViewTargetPos.z, LERP_FACTOR * 1.5);
+                    camera.lookAt(fightViewMidPointX, CAM_LOOKAT_Y, 0);
+                }
+                // Fight/Game Over camera logic (dynamic follow)
+                else if (fightPhase === 'FIGHT' || fightPhase === 'GAME_OVER') {
+                    const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
+                    if (playersLanded) { // Only update if players are on the ground
+                        const cameraDistX = Math.abs(p1Group.position.x - p2Group.position.x);
+                        const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + cameraDistX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
+                        const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
+                        camera.position.x = THREE.MathUtils.lerp(camera.position.x, midPointX, LERP_FACTOR);
+                        camera.position.y = THREE.MathUtils.lerp(camera.position.y, CAM_Y, LERP_FACTOR);
+                        camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetZ, LERP_FACTOR);
+                        camera.lookAt(midPointX, CAM_LOOKAT_Y, 0);
+                    }
+                }
+                // Always update projection matrix if camera logic ran
+                camera.updateProjectionMatrix();
+            }
+        }
     });
 
     // Ensure the component returns JSX
@@ -417,6 +418,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 startIntroAnimation={fightPhase === 'INTRO_P1'}
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP1Ready(true); }}
+                currentHealth={player1Health}
             />
             <PlayerCharacter
                 ref={player2Ref}
@@ -430,6 +432,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 startIntroAnimation={fightPhase === 'INTRO_P2'}
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP2Ready(true); }}
+                currentHealth={player2Health}
             />
 
             <AIController
@@ -496,12 +499,16 @@ export function BattleScene({
     const [p2IntroAnim, setP2IntroAnim] = useState<string | null>(null);
     const [showReadyText, setShowReadyText] = useState(false);
     const [showFightText, setShowFightText] = useState(false);
+    const [winnerName, setWinnerName] = useState<string | null>(null);
+    const [showWinnerBanner, setShowWinnerBanner] = useState(false);
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
 
     const versusSoundUrl = '/sounds/voices/versus.mp3';
     const readySoundUrl = '/sounds/voices/ready.mp3';
     const fightSoundUrl = '/sounds/voices/fight.mp3';
+    const youWinSoundUrl = '/sounds/voices/you_win.mp3';
+    const youLoseSoundUrl = '/sounds/voices/you_lose.mp3';
 
     // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
@@ -545,7 +552,9 @@ export function BattleScene({
                 setShowReadyText(true);
                 phaseTimer = setTimeout(() => {
                     setShowReadyText(false);
-                    setFightPhase('FIGHT');
+                    if (fightPhase === 'READY') {
+                        setFightPhase('FIGHT');
+                    }
                 }, 1000);
                 break;
             case 'FIGHT':
@@ -554,6 +563,17 @@ export function BattleScene({
                 setIsAIEnabled(true);
                 phaseTimer = setTimeout(() => setShowFightText(false), 1000);
                 break;
+             case 'GAME_OVER':
+                 setIsAIEnabled(false);
+                 setShowReadyText(false);
+                 setShowFightText(false);
+                 setShowWinnerBanner(true);
+                 if (winnerName === player1Name) {
+                     playSound(youWinSoundUrl);
+                 } else {
+                     playSound(youLoseSoundUrl);
+                 }
+                 break;
              case 'LOADING':
                  setIsAIEnabled(false);
                  setShowReadyText(false);
@@ -569,7 +589,25 @@ export function BattleScene({
              if (phaseTimer) clearTimeout(phaseTimer);
              if (soundDelayTimer) clearTimeout(soundDelayTimer); // Ensure sound delay timer is cleared
         }
-    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible]);
+    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, youWinSoundUrl, youLoseSoundUrl]);
+
+    // --- Effect to check for Game Over ---
+    useEffect(() => {
+        if (fightPhase === 'FIGHT') {
+            let determinedWinner: string | null = null;
+            if (player1Health <= 0) {
+                determinedWinner = player2Name;
+            } else if (player2Health <= 0) {
+                determinedWinner = player1Name;
+            }
+
+            if (determinedWinner) {
+                console.log(`[BattleScene] Game Over! Winner: ${determinedWinner}`);
+                setWinnerName(determinedWinner);
+                setFightPhase('GAME_OVER');
+            }
+        }
+    }, [player1Health, player2Health, fightPhase, player1Name, player2Name]);
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>
@@ -595,6 +633,8 @@ export function BattleScene({
                         }}
                         p1IntroAnim={p1IntroAnim}
                         p2IntroAnim={p2IntroAnim}
+                        player1Health={player1Health}
+                        player2Health={player2Health}
                     />
                 </Canvas>
 
@@ -616,6 +656,18 @@ export function BattleScene({
                  }}>
                      {showReadyText && <p style={{ fontSize: '4em', color: 'white', fontWeight: 'bold', textShadow: '2px 2px 4px #000000' }}>Ready?</p>}
                      {showFightText && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
+                     {/* --- Winner Banner --- */}
+                    {showWinnerBanner && winnerName && (
+                        <p style={{
+                            fontSize: '3.5em',
+                            color: '#FFD700',
+                            fontWeight: 'bold',
+                            textShadow: '3px 3px 6px #000000',
+                            whiteSpace: 'nowrap'
+                        }}>
+                            {winnerName}<br></br> Wins!
+                        </p>
+                    )}
                  </div>
 
             </>

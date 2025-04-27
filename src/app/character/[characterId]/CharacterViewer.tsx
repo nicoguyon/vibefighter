@@ -426,7 +426,14 @@ export default function CharacterViewer({ modelUrl, nameAudioUrl }: CharacterVie
                         shadow-mapSize-height={1024} 
                     />
                     <hemisphereLight intensity={0.4} groundColor="#555" />
-                     <Suspense fallback={ <Html center> <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p> </Html> }>
+                     <Suspense fallback={ 
+                         <Html center>
+                            {/* Apply inline style to vertically align higher */}
+                            <div style={{ marginTop: '-150px' }}> {/* Increased negative margin */}
+                                <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p> 
+                            </div>
+                         </Html> 
+                     }>
                          {/* Pass setAutoRotate is removed */}
                          <Model url={modelUrl} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
                          <AnimationRunner mixer={mixer} />

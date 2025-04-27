@@ -21,9 +21,10 @@ type CreationStep = 'prompt' | 'selectConcept' | 'nameCharacter' | 'finalize'; /
 
 // Interface for task status polling
 interface TaskStatus {
-    status: string;
+    status: string; // Tripo task status (e.g., pending, running, success, failed)
     progress?: number;
     output?: any; // Define more specifically later if needed
+    characterDatabaseStatus?: string | null; // Status from our DB (e.g., generating_model, generating_rig, saving_model, complete, failed)
 }
 
 export default function CreateCharacter() {
@@ -281,11 +282,13 @@ export default function CreateCharacter() {
               // Stop polling on definitive errors (like 404 Not Found)
               if (response.status === 404) {
                   console.error(`Polling failed: Task ${taskId} not found.`);
-                  setError(`Task ${taskId} not found. Please try again or go back.`);
+                  setError(`Task ${taskId} not found. Process may have failed. Please try again or go back.`);
                   stopPolling();
                   setBackgroundTaskRunning(false);
-                  // Decide where to send user - maybe concept select? 
-                  // setCreationStep('selectConcept'); 
+                  setIsModelComplete(false); // Reset completion flags
+                  setIsRigComplete(false);
+                  // Decide where to send user - maybe concept select?
+                  // setCreationStep('selectConcept');
               } else {
                   const errorData = await response.json().catch(() => ({})); // Try parsing error
                   console.error(`Polling error ${response.status}:`, errorData.error || response.statusText);
@@ -299,9 +302,10 @@ export default function CreateCharacter() {
           const data: TaskStatus = await response.json();
           console.log(`Poll Response (${isRiggingTask ? 'Rig' : 'Model'} Task ${taskId}):`, data);
 
-          // Update progress based on which task it is
+          // --- Update Progress --- 
           let currentOverallProgress = taskProgress;
-          if (data.progress !== undefined) {
+          // Use Tripo progress if available, otherwise infer from DB status
+          if (data.progress !== undefined && data.status !== 'success') { // Only use tripo progress if task not yet successful
                if (isRiggingTask) {
                    // Rigging is 50% to 100%
                    currentOverallProgress = 50 + Math.round(data.progress / 2);
@@ -309,82 +313,128 @@ export default function CreateCharacter() {
                    // Modeling is 0% to 50%
                    currentOverallProgress = Math.round(data.progress / 2);
                }
-               // Prevent progress going backwards
-               setTaskProgress(prev => Math.max(prev, currentOverallProgress > 100 ? 100 : currentOverallProgress)); 
+               // Prevent progress going backwards unless reset
+               setTaskProgress(prev => Math.max(prev, currentOverallProgress > 100 ? 100 : currentOverallProgress));
+          } else if (data.characterDatabaseStatus === 'saving_model') {
+              setTaskProgress(95); // Show near completion when saving
+          } else if (data.characterDatabaseStatus === 'complete') {
+              setTaskProgress(100);
+          } else if (data.characterDatabaseStatus === 'generating_rig') {
+               setTaskProgress(prev => Math.max(prev, 50)); // Ensure progress shows at least 50%
+          } else if (data.characterDatabaseStatus === 'generating_model') {
+               setTaskProgress(prev => Math.max(prev, 0)); // Ensure progress shows at least 0%
           }
-          
-          setTaskStatus(data.status || "Processing..."); // Update status message
 
-          // --- Handle Task Completion --- 
-          if (data.status === 'success') {
-              stopPolling(); // Stop polling for *this* task ID
-              
-              if (isRiggingTask) {
-                  console.log("Rigging successful! Output:", data.output);
-                  setTaskProgress(100);
-                  setTaskStatus("Character Ready!");
-                  setIsRigComplete(true);
-                  setBackgroundTaskRunning(false); // All background work done
-                  // TODO: Save final rigged model URL (data.output?.result?.pbr_model?.url ??) to DB and R2
-                  console.log("TODO: Save final rigged model to R2/DB");
-                  // Maybe auto-finalize name here if name already entered? 
-                  // Or enable a final confirmation button. For now, user clicks the button in step 3.
+          // --- Update Status Message based on DB Status primarily ---
+          if (data.characterDatabaseStatus === 'complete') {
+              setTaskStatus("Character Ready!");
+          } else if (data.characterDatabaseStatus === 'failed') {
+              setTaskStatus("Processing Failed");
+          } else if (data.characterDatabaseStatus === 'saving_model') {
+              setTaskStatus("Saving final model...");
+          } else if (data.characterDatabaseStatus === 'generating_rig') {
+              setTaskStatus(`Generating rig (${data.progress !== undefined ? data.progress + '%' : '...'})`);
+          } else if (data.characterDatabaseStatus === 'generating_model') {
+              setTaskStatus(`Generating 3D model (${data.progress !== undefined ? data.progress + '%' : '...'})`);
+          } else if (data.status === 'success' && isRiggingTask && !data.characterDatabaseStatus) {
+              // Rig task finished in Tripo, but DB status not yet updated
+              setTaskStatus("Finalizing...");
+          } else if (data.status === 'success' && !isRiggingTask && !data.characterDatabaseStatus) {
+               // Model task finished in Tripo, awaiting rig start
+              setTaskStatus("Preparing rig generation...");
+          } else {
+              setTaskStatus(data.status || "Processing..."); // Fallback to Tripo status
+          }
 
-              } else { // Model task succeeded
-                  console.log("Model generation successful! Output:", data.output);
-                  setTaskProgress(50); // Mark model as 50% done
-                  setTaskStatus("Starting rig generation...");
-                  setIsModelComplete(true);
-                  
-                  // --- Trigger Rigging Task --- 
-                  const startRigging = async () => {
-                      if (!characterId) { // Guard against missing character ID
-                          console.error("Cannot start rigging: Character ID is missing.");
-                          setError("Cannot start rigging: Character ID is missing.");
-                          setBackgroundTaskRunning(false);
+          // --- Handle Task Completion based on DB Status --- 
+          if (data.characterDatabaseStatus === 'complete') {
+              console.log("Character confirmed COMPLETE via database status.");
+              stopPolling();
+              setTaskProgress(100);
+              setIsModelComplete(true); // Ensure both flags are true
+              setIsRigComplete(true);   // <--- Set rig complete based on DB
+              setBackgroundTaskRunning(false);
+              // Navigation will be handled by the useEffect hook watching isRigComplete & isNameConfirmed
+
+          } else if (data.characterDatabaseStatus === 'failed') {
+              console.error("Character processing FAILED according to database status.");
+              stopPolling();
+              setError("Character processing failed. Please try again or go back."); // Provide user feedback
+              setBackgroundTaskRunning(false);
+              setIsModelComplete(false); // Ensure completion flags are false
+              setIsRigComplete(false);
+
+          } else if (data.status === 'success' && !isRiggingTask && !riggingTaskId && characterId) {
+              // Model task succeeded (according to Tripo), DB status might be generating_model or generating_rig
+              // We need to trigger the rigging task if it hasn't started.
+              console.log("Model generation successful (Tripo)! Triggering rigging task if not already started...");
+              setTaskProgress(50); // Mark model as 50% done
+              setIsModelComplete(true);
+
+              // Ensure model task ID is set in state (should already be, but safe check)
+              if (!modelTaskId) setModelTaskId(taskId);
+
+              // --- Trigger Rigging Task --- 
+              const triggerRiggingTask = async (currentModelTaskId: string, currentCharacterId: string) => {
+                   console.log(`Attempting to trigger rig task for model ${currentModelTaskId} (Char: ${currentCharacterId})`);
+                  // Double check rigging hasn't been triggered by another poll response race condition
+                  if (riggingTaskId) {
+                       console.log("Rigging task ID already exists, skipping trigger.");
+                       return;
+                  }
+                  try {
+                      setTaskStatus("Initiating rig generation..."); // Update UI feedback
+                      const rigResponse = await fetch('/api/rig-character', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ modelTaskId: currentModelTaskId, characterId: currentCharacterId }),
+                      });
+                      if (!rigResponse.ok) {
+                          const errorData = await rigResponse.json().catch(() => ({})); // Try parsing error
+                          throw new Error(errorData.error || `Failed to start rigging task (HTTP ${rigResponse.status})`);
                       }
-                      try {
-                          console.log("Initiating rigging task for model task ID:", taskId);
-                          const rigResponse = await fetch('/api/rig-character', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ modelTaskId: taskId, characterId: characterId }),
-                          });
-                          if (!rigResponse.ok) {
-                              const errorData = await rigResponse.json();
-                              throw new Error(errorData.error || "Failed to start rigging task.");
-                          }
-                          const rigResult = await rigResponse.json();
-                          if (!rigResult.riggingTaskId) throw new Error ("API did not return rigging task ID.");
-                          
-                          console.log("Rigging Task ID received:", rigResult.riggingTaskId);
-                          setRiggingTaskId(rigResult.riggingTaskId); // Start polling for the new task
-                          setTaskStatus("Generating rig (50%)...");
-
-                      } catch (rigError: any) {
-                           console.error("Failed to start rigging:", rigError);
-                           setError("Failed to start character rigging.");
-                           setBackgroundTaskRunning(false);
+                      const rigResult = await rigResponse.json();
+                      if (!rigResult.riggingTaskId) {
+                          throw new Error ("API did not return rigging task ID.");
                       }
-                  };
-                  startRigging(); // Call the async function to start rigging
-              }
+
+                      console.log("Rigging Task ID received:", rigResult.riggingTaskId);
+                      setRiggingTaskId(rigResult.riggingTaskId); // <-- Set state to start polling new task
+                      // Polling will automatically switch due to useEffect dependency
+                      // Status update will happen based on DB status in subsequent polls
+
+                  } catch (rigError: any) {
+                       console.error("Failed to trigger rigging task:", rigError);
+                       setError(`Failed to start character rigging: ${rigError.message}`);
+                       // Stop polling and background task if rigging fails to initiate
+                       stopPolling();
+                       setBackgroundTaskRunning(false);
+                       // Maybe mark character as failed in DB here via another API call?
+                  }
+              };
+
+              // Call the async function to trigger rigging
+              triggerRiggingTask(taskId, characterId);
 
           } else if (data.status === 'failed' || data.status === 'error') {
-              stopPolling();
-              console.error(`Tripo task ${taskId} failed:`, data);
-              setError(`Process failed during ${isRiggingTask ? 'rigging' : 'model generation'}: ${data.status}`);
-              setBackgroundTaskRunning(false);
-              // Maybe allow retry or force user back?
+              // Handle Tripo task failure if DB status hasn't already reflected it
+              if (data.characterDatabaseStatus !== 'failed') {
+                 console.error(`Tripo task ${taskId} failed:`, data);
+                 setError(`Process failed during ${isRiggingTask ? 'rigging' : 'model generation'}: ${data.status || 'error'}`);
+                 // DB status should be updated by the backend API, polling will pick up the 'failed' state soon.
+                 // We can optionally stop polling here early if desired.
+                 // stopPolling();
+                 // setBackgroundTaskRunning(false);
+              }
           }
-          // Continue polling if status is pending, queue, running etc.
+          // Continue polling if DB status is not complete or failed
 
       } catch (err) {
           console.error("Error during polling fetch:", err);
           // Don't stop polling on network errors immediately, could be temporary
           setTaskStatus("Network error checking status... Retrying...");
       }
-  }, [taskProgress, characterId]); // Added characterId to dependencies
+  }, [taskProgress, characterId, modelTaskId, riggingTaskId]); // Dependencies updated
 
   // Start/Stop Polling Logic (Now handles switching tasks)
   useEffect(() => {
@@ -567,8 +617,9 @@ export default function CreateCharacter() {
 
   // Effect to handle automatic navigation AFTER name confirmation AND task completion
   useEffect(() => {
+      // Now relies on isRigComplete which is set based on database status
       if (isNameConfirmed && isRigComplete && characterId) {
-          console.log("Name confirmed and tasks complete. Navigating now...");
+          console.log("Name confirmed and tasks complete (DB confirmed). Navigating now...");
           router.push(`/character/${characterId}`);
       }
       // Dependencies ensure this runs when confirmation status or completion status changes
@@ -771,7 +822,7 @@ export default function CreateCharacter() {
                         className={`btn-arcade ${characterName.trim().length === 0 || isNameConfirmed ? "btn-arcade-disabled" : "btn-arcade-secondary"} w-60`}
                     >
                         {isNameConfirmed 
-                            ? (isRigComplete ? "Confirmed" : "Processing...") 
+                            ? (isRigComplete ? "Confirmed & Ready!" : "Confirmed, Processing...") 
                             : "Confirm Name"
                         } 
                     </button>

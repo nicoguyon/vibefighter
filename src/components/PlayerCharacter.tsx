@@ -21,6 +21,7 @@ import {
     createTransitionToArmsCrossedClip,
     createArmsCrossedBreathClip,
     createBowClip,
+    createFallBackwardClip,
     // --- Target Pose Imports ---
     defaultFightStanceTargets,
     blockTargets,
@@ -73,6 +74,7 @@ interface PlayerCharacterProps {
     canFight: boolean;
     externalInput?: React.RefObject<InputState>;
     onCharacterReady?: () => void;
+    currentHealth: number;
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -110,6 +112,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             canFight,
             externalInput,
             onCharacterReady,
+            currentHealth,
         } = props;
 
         // --- Refs ---
@@ -136,6 +139,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const nextPunchTypeRef = useRef<'right' | 'left'>('right'); // <-- Use useRef to track next punch type
         const [idleBreathAction, setIdleBreathAction] = useState<THREE.AnimationAction | null>(null); 
         const [audioPlayed, setAudioPlayed] = useState(false); // Track audio playback
+        const [fallBackwardAction, setFallBackwardAction] = useState<THREE.AnimationAction | null>(null); // <-- ADD State for Fall Action
         const punchIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for punch interval timer
         const stanceTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for initial stance delay timeout
 
@@ -280,6 +284,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const duckPoseClip = useMemo(() => createDuckPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets), [initialPose]);
         const blockPoseClip = useMemo(() => createBlockPoseClip(skeletonRef.current, initialPose, defaultFightStanceTargets), [initialPose]);
         const duckKickClip = useMemo(() => createDuckKickClip(skeletonRef.current, initialPose), [initialPose]);
+        const fallBackwardClip = useMemo(() => createFallBackwardClip(skeletonRef.current, initialPose), [initialPose]);
 
         // --- NEW: Intro Animation Clips ---
         const transitionToHelloClip = useMemo(() => createTransitionToHelloClip(skeletonRef.current, initialPose, helloTargets), [initialPose]);
@@ -294,6 +299,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             const clips = [
                 walkCycleClip, fightStanceClip, idleBreathClip,
                 duckPoseClip, blockPoseClip, duckKickClip,
+                fallBackwardClip,
                 // Add intro clips
                 transitionToHelloClip, helloWaveLoopClip,
                 transitionToArmsCrossedClip, armsCrossedBreathClip,
@@ -304,6 +310,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         }, [
             walkCycleClip, fightStanceClip, idleBreathClip,
             duckPoseClip, blockPoseClip, duckKickClip,
+            fallBackwardClip,
             transitionToHelloClip, helloWaveLoopClip,
             transitionToArmsCrossedClip, armsCrossedBreathClip,
             bowClip
@@ -329,6 +336,11 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
              if (actions?.TransitionToArmsCrossed) { actions.TransitionToArmsCrossed.setLoop(THREE.LoopOnce, 1); actions.TransitionToArmsCrossed.clampWhenFinished = true; }
              if (actions?.ArmsCrossedBreath) { actions.ArmsCrossedBreath.setLoop(THREE.LoopRepeat, Infinity); }
              if (actions?.Bow) { actions.Bow.setLoop(THREE.LoopOnce, 1); actions.Bow.clampWhenFinished = true; }
+             if (actions?.FallBackward) {
+                 actions.FallBackward.setLoop(THREE.LoopOnce, 1);
+                 actions.FallBackward.clampWhenFinished = true;
+                 setFallBackwardAction(actions.FallBackward);
+             }
 
              if (mixer) mixer.timeScale = 1;
 
@@ -634,7 +646,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             mixer.addEventListener('finished', listener);
             return () => mixer.removeEventListener('finished', listener);
             // --- ADJUSTED DEPENDENCIES ---
-        }, [mixer, actions, canFight, initialFacing]); // Removed getEffectiveInputState, triggerStandUp
+        }, [mixer, actions, canFight, initialFacing]);
 
 
         // --- NEW: Effect to Handle Intro Animation Trigger ---
@@ -766,8 +778,8 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
              } 
              // --- REFINED Condition for Stopping Actions ---
              // Only stop actions if moving OUT of the active fight/setup phases
-             else if (fightPhase !== 'FIGHT' && fightPhase !== 'PRE_FIGHT' && fightPhase !== 'READY' && fightPhase !== 'INTRO_P1' && fightPhase !== 'INTRO_P2') { 
-                 // Now only runs on e.g., LOADING, INTRO_START, GAME_OVER
+             else if (fightPhase !== 'FIGHT' && fightPhase !== 'PRE_FIGHT' && fightPhase !== 'READY' && fightPhase !== 'INTRO_P1' && fightPhase !== 'INTRO_P2' && fightPhase !== 'GAME_OVER') { // <-- ADD GAME_OVER exclusion
+                 // Now only runs on e.g., LOADING, INTRO_START
 
                  console.log(`[PlayerCharacter ${initialFacing}] Phase ${fightPhase}. Stopping non-intro actions.`); // Updated log
 
@@ -792,6 +804,50 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
              }
 
          }, [fightPhase, actions, mixer, initialPose, isInStance, initialFacing]); // Added mixer and initialPose dependencies
+
+         // --- NEW: Effect to Handle Game Over (Fall) --- 
+         useEffect(() => {
+             if (fightPhase === 'GAME_OVER' && currentHealth <= 0 && fallBackwardAction && skeletonRef.current) {
+                 console.log(`[PlayerCharacter ${initialFacing}] GAME OVER - Health <= 0. Triggering FallBackward.`);
+
+                 // 1. Stop all other actions immediately
+                 mixer?.stopAllAction();
+
+                 // 2. Capture current pose (essential for fall clip starting correctly)
+                 const currentPose: StartPose = {};
+                 skeletonRef.current.bones.forEach(bone => {
+                     currentPose[bone.name] = { quat: bone.quaternion.clone() };
+                 });
+
+                 // 3. Create the fall clip *using the captured start pose*
+                 // Re-create the clip to bake in the start pose
+                 const fallClip = createFallBackwardClip(
+                     skeletonRef.current,
+                     initialPose,
+                     currentPose,
+                     'FallBackward_Dynamic' // Use a different name to avoid conflicts
+                 );
+
+                 if (fallClip) {
+                     // 4. Create and play the dynamic fall action
+                     const dynamicFallAction = mixer.clipAction(fallClip);
+                     dynamicFallAction.setLoop(THREE.LoopOnce, 1);
+                     dynamicFallAction.clampWhenFinished = true;
+                     dynamicFallAction.reset().fadeIn(0.2).play();
+                     console.log(`[PlayerCharacter ${initialFacing}] Playing dynamic FallBackward action.`);
+                     
+                     // Ensure flags are set correctly for the fallen state
+                     isActionInProgress.current = true; // Prevent other actions during fall
+                     isAttackingRef.current = false;
+                     isBlockingRef.current = false;
+                     isDuckingRef.current = false;
+                     isMovingHorizontally.current = false;
+                     isInStance.current = false; // Not in stance when fallen
+                 } else {
+                     console.error(`[PlayerCharacter ${initialFacing}] Failed to create dynamic FallBackward clip.`);
+                 }
+             }
+         }, [fightPhase, currentHealth, fallBackwardAction, mixer, initialPose, initialFacing]);
 
 
         // --- Effect to Handle Action Triggers (Only During FIGHT Phase) ---

@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase/client';
 import { notFound } from 'next/navigation';
 import CharacterViewer from './CharacterViewer';
+import Link from 'next/link';
 
 interface CharacterPageProps {
     params: {
@@ -68,6 +69,22 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
             </div>
            
             <CharacterViewer modelUrl={finalModelUrl} nameAudioUrl={finalAudioUrl} />
+
+            {/* Navigation Buttons */}
+            <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-10 flex flex-row justify-center gap-4 items-center">
+                 <Link 
+                    href={`/vs/${characterId}`} 
+                    className="btn-arcade btn-arcade-primary px-8 py-3 text-lg"
+                 >
+                     Continue
+                 </Link>
+                <Link 
+                    href="/select" 
+                    className="btn-arcade btn-arcade-secondary px-6 py-3 text-lg"
+                 >
+                    Back to Menu
+                 </Link>
+            </div>
 
         </main>
     );

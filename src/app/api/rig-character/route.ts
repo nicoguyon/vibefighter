@@ -69,12 +69,12 @@ export async function POST(request: NextRequest) {
         console.log("Tripo Rigging Task Created, ID:", riggingTaskId);
 
         // 2. Update Supabase record with rigging task ID and status
-        console.log(`Updating character ${characterId} with rigging task ID ${riggingTaskId}...`);
+        console.log(`Updating character ${characterId} with rigging task ID ${riggingTaskId} and status 'generating_rig'...`);
         const { error: updateError } = await supabaseAdmin
             .from('characters')
             .update({ 
                 tripo_rig_task_id: riggingTaskId,
-                status: 'rigging' 
+                status: 'generating_rig'
             })
             .eq('id', characterId);
 

@@ -1475,3 +1475,111 @@ export function createLeftPunchClip(
     if (tracks.length === 0) { console.warn(`[createLeftPunchClip] No tracks generated for ${clipName}.`); return null; }
     return new THREE.AnimationClip(clipName, duration, tracks);
 }
+
+// --- NEW: Fall Backward Animation ---
+
+/**
+ * Creates a fall backward animation.
+ * Starts from a provided startPose (or current), transitions to lying on the back.
+ */
+export function createFallBackwardClip(
+    skeleton: THREE.Skeleton | null,
+    initialPose: Record<string, InitialPoseData>,
+    startPose: StartPose | null = null, // Optional start pose
+    clipName: string = 'FallBackward',
+    duration: number = 1.5 // Duration for the fall
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn("[createFallBackwardClip] Missing skeleton or initial pose.");
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    const times = [0, duration * 0.6, duration]; // Keyframes: Start, Approx Impact, Final Rest
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpQuat = new THREE.Quaternion();
+    const tmpVec = new THREE.Vector3();
+    const tmpQuat2 = new THREE.Quaternion(); // For interpolation
+    const tmpVec2 = new THREE.Vector3(); // For interpolation
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName];
+        if (!initial) return;
+
+        // --- Get STARTING pose (Frame 0) ---
+        let startQuat: THREE.Quaternion;
+        let startPos: THREE.Vector3;
+        if (startPose && startPose[boneName]) {
+            startQuat = startPose[boneName].quat.clone();
+            // Position usually isn't in startPose, use current bone position
+            startPos = bone.position.clone(); 
+        } else {
+            // Fallback to live skeleton pose if no startPose provided
+            startQuat = bone.quaternion.clone();
+            startPos = bone.position.clone();
+        }
+
+        // --- Define Final RESTING Pose (Frame 2) ---
+        // This is the target pose lying on the back
+        let finalQuat = new THREE.Quaternion();
+        let finalPos = new THREE.Vector3().copy(initial.pos); // Base final position on initial relative offset
+
+        // Set absolute rotations/positions for the final pose
+        // Note: Exact values might need tweaking based on the specific model's proportions and origin
+        if (boneName === 'Hip') {
+            // Keep X from start, shift Y backward, set Z to ground level
+            finalPos.x = startPos.x;
+            finalPos.y = startPos.y + 0.9; // Shift "backward" (positive Y) from start Y
+            finalPos.z = 0.15;           // <-- INCREASED Z offset to keep body higher
+            tmpEuler.set(deg(132), deg(-150), deg(180), 'XYZ'); // Use user-provided rotation
+            finalQuat.setFromEuler(tmpEuler);
+        } else {
+            // Other bones revert to their initial pose relative to the fallen hip
+            finalQuat.copy(initial.quat);
+            finalPos.copy(initial.pos); // Maintain relative offset from parent
+        }
+
+        // --- Define IMPACT Pose (Frame 1) ---
+        // Interpolate rotation, calculate position for backward jump effect
+        let impactQuat = new THREE.Quaternion();
+        let impactPos = new THREE.Vector3();
+        impactQuat.slerpQuaternions(startQuat, finalQuat, 0.6);
+
+        if (boneName === 'Hip') {
+            // Hip moves slightly back and UP for the impact/jump part
+            impactPos.x = THREE.MathUtils.lerp(startPos.x, finalPos.x, 0.3); // Minimal X change
+            impactPos.y = startPos.y + 0.3; // Shift slightly backward during impact
+            impactPos.z = finalPos.z + 0.5; // Jump UP slightly relative to final ground Z
+        } else {
+            // Other bones interpolate normally between start and their final initial-relative pose
+             impactPos.lerpVectors(startPos, finalPos, 0.7);
+        }
+
+        // --- Assemble Keyframe Values ---
+        const quatValues = [
+            startQuat.x, startQuat.y, startQuat.z, startQuat.w,
+            impactQuat.x, impactQuat.y, impactQuat.z, impactQuat.w,
+            finalQuat.x, finalQuat.y, finalQuat.z, finalQuat.w
+        ];
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, quatValues));
+
+        // Add position track ONLY if start, impact, or final positions differ
+        if (!startPos.equals(finalPos) || !startPos.equals(impactPos) || !impactPos.equals(finalPos)) {
+             const posValues = [
+                 startPos.x, startPos.y, startPos.z,
+                 impactPos.x, impactPos.y, impactPos.z,
+                 finalPos.x, finalPos.y, finalPos.z
+             ];
+             tracks.push(new THREE.VectorKeyframeTrack(`${boneName}.position`, times, posValues));
+        }
+    });
+
+    if (tracks.length === 0) { 
+        console.warn(`[createFallBackwardClip] No tracks generated for ${clipName}.`); 
+        return null; 
+    }
+    // This clip should not loop, the animation manager should clamp it at the end.
+    return new THREE.AnimationClip(clipName, duration, tracks);
+}
