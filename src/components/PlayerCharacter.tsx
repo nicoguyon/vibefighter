@@ -75,6 +75,7 @@ interface PlayerCharacterProps {
     externalInput?: React.RefObject<InputState>;
     onCharacterReady?: () => void;
     currentHealth: number;
+    isPaused: boolean;
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -119,6 +120,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             externalInput,
             onCharacterReady,
             currentHealth,
+            isPaused,
         } = props;
 
         // --- Refs ---
@@ -257,11 +259,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         // --- Input Handling (Conditionally Active) ---
         useEffect(() => {
-            if (!isPlayerControlled || externalInput || !canFight) { // <--- ADDED !canFight check
-                 // If listeners were previously attached, remove them
+            if (!isPlayerControlled || externalInput || !canFight || isPaused) {
                  window.removeEventListener('keydown', handleKeyDown);
                  window.removeEventListener('keyup', handleKeyUp);
-                 return; // Don't attach listeners if not player controlled or fight hasn't started
+                 // Clear pressed keys when input is disabled or paused
+                 setPressedKeys({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
+                 return;
             }
 
             window.addEventListener('keydown', handleKeyDown);
@@ -270,21 +273,21 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 window.removeEventListener('keydown', handleKeyDown);
                 window.removeEventListener('keyup', handleKeyUp);
             };
-             // Add canFight to dependency array to re-evaluate listener attachment
-        }, [isPlayerControlled, externalInput, canFight, handleKeyDown, handleKeyUp]); // Add handlers to dependencies
+        }, [isPlayerControlled, externalInput, canFight, isPaused, handleKeyDown, handleKeyUp]);
 
 
         // --- Helper to get the current effective input state ---
         const getEffectiveInputState = useCallback((): InputState => {
-            // Return empty state if fight hasn't started
-            if (!canFight) {
-                return { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+            const emptyState = { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+            // Return empty state if paused or fight hasn't started
+            if (isPaused || !canFight) {
+                return emptyState;
             }
             if (externalInput?.current) {
                 return externalInput.current;
             }
             return pressedKeys;
-        }, [externalInput, pressedKeys, canFight]); // Add canFight dependency
+        }, [externalInput, pressedKeys, canFight, isPaused]);
 
 
         // --- Create Animation Clips ---
@@ -895,6 +898,8 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         // --- Frame Update ---
         useFrame((state, delta) => {
+            if (isPaused) return;
+
             delta = Math.min(delta, 0.05);
             const group = groupRef.current;
             const modelWrapper = modelWrapperRef.current;

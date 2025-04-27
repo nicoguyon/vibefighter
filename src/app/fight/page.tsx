@@ -2,10 +2,11 @@
 
 import React, { Suspense, useState, useEffect, useContext } from 'react';
 import dynamic from 'next/dynamic';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase/client';
 import { AudioContext } from '@/contexts/AudioContext';
+import { playSoundEffect } from '@/utils/playSoundEffect';
 
 // Dynamically import the BattleScene component with SSR disabled
 const BattleScene = dynamic(
@@ -55,17 +56,17 @@ async function getResourceData(id: string, resourceType: 'character' | 'location
         if (resourceType === 'character') {
             const { data, error } = await supabase
                 .from('characters')
-                .select('name, model_glb_url, name_audio_url')
+                .select('id, name, model_glb_url, name_audio_url')
                 .eq('id', id)
                 .single();
 
             if (error) throw error;
             if (!data?.model_glb_url || !data?.name) throw new Error("Missing name or model_glb_url");
 
-            console.log(`[FightPage] Fetched Character: ${data.name} (Audio URL: ${!!data.name_audio_url})`);
+            console.log(`[FightPage] Fetched Character: ${data.name} (ID: ${data.id}, Audio URL: ${!!data.name_audio_url})`);
             return {
                 type: 'character',
-                id,
+                id: data.id,
                 name: data.name,
                 modelUrl: ensureAbsoluteUrl(data.model_glb_url),
                 nameAudioUrl: ensureAbsoluteUrl(data.name_audio_url)
@@ -99,6 +100,7 @@ async function getResourceData(id: string, resourceType: 'character' | 'location
 // Default export for the page component
 export default function FightPage() {
     const searchParams = useSearchParams();
+    const router = useRouter();
     // Use original parameter names
     const charId1 = searchParams.get('char1');
     const charId2 = searchParams.get('char2');
@@ -167,7 +169,7 @@ export default function FightPage() {
                 console.log(`[FightPage] Fetched Data: P1=${p1?.name}, P2=${p2?.name}, Loc=${loc?.id}`);
 
                 // Check all required data fields (including floor texture)
-                if (p1?.modelUrl && p2?.modelUrl && loc?.backgroundImageUrl && loc?.floorTextureUrl) {
+                if (p1?.id && p1?.modelUrl && p2?.modelUrl && loc?.backgroundImageUrl && loc?.floorTextureUrl) {
                     console.log("[FightPage] All required data fetched successfully.");
                     setPlayer1Data(p1);
                     setPlayer2Data(p2);
@@ -176,7 +178,7 @@ export default function FightPage() {
                     setIsLoading(false); // Set loading false ONLY after successful data validation
                 } else {
                     let errorMsg = "Failed to fetch required fight data.";
-                    if (!p1?.modelUrl || !p1?.name) errorMsg += ` Char1(${charId1}) missing data.`;
+                    if (!p1?.id || !p1?.modelUrl || !p1?.name) errorMsg += ` Char1(${charId1}) missing data (id, model, or name).`;
                     if (!p2?.modelUrl || !p2?.name) errorMsg += ` Char2(${charId2}) missing data.`;
                     // Check floor texture URL in error message
                     if (!loc?.backgroundImageUrl || !loc?.floorTextureUrl) errorMsg += ` Loc(${locationId}) missing background or floor data.`;
@@ -211,8 +213,8 @@ export default function FightPage() {
         );
     }
 
-    // Check all required data objects and their properties (including floor texture)
-    if (!player1Data?.modelUrl || !player2Data?.modelUrl || !locationData?.backgroundImageUrl || !locationData?.floorTextureUrl) {
+    // Check all required data objects and their properties (including floor texture and p1 ID)
+    if (!player1Data?.id || !player1Data?.modelUrl || !player2Data?.modelUrl || !locationData?.backgroundImageUrl || !locationData?.floorTextureUrl) {
         // This case might not be strictly necessary anymore if isLoading handles the initial data fetch,
         // but can remain as a fallback check.
         return <LoadingFallback message="Validating Assets..." />;
@@ -221,10 +223,11 @@ export default function FightPage() {
     // --- Render the Scene OR Loading Fallback ---
     return (
         <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' }}>
-            {!isSceneVisible && <LoadingFallback message="Preparing Scene..." />}
+            {!isSceneVisible && !isLoading && <LoadingFallback message="Preparing Scene..." />}
             <div style={{ visibility: isSceneVisible ? 'visible' : 'hidden', width: '100%', height: '100%' }}>
                 {/* Pass names, URLs, and the new callback */}
                 <BattleScene
+                    player1Id={player1Data.id}
                     player1ModelUrl={player1Data.modelUrl}
                     player2ModelUrl={player2Data.modelUrl}
                     player1Name={player1Data.name}

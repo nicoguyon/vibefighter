@@ -10,6 +10,8 @@ import * as THREE from 'three';
 import { PlayerCharacter, PlayerCharacterHandle, InputState, FightPhase } from './PlayerCharacter'; // Import InputState and FightPhase
 import HealthBar from './HealthBar'; // Import the HealthBar component
 import { AIController } from './AIController'; // Import AIController
+import { playSoundEffect } from '@/utils/playSoundEffect'; // <-- Import sound utility
+import { useRouter } from 'next/navigation';             // <-- Import router
 
 // Define stage boundaries
 const MIN_X = -8;
@@ -77,6 +79,7 @@ const playSound = (url: string | null, volume: number = 1.0) => {
 // }
 
 interface BattleSceneProps {
+    player1Id: string; // <-- Add player 1 ID prop
     player1ModelUrl: string;
     player2ModelUrl: string;
     player1Name: string;
@@ -131,6 +134,7 @@ interface BattleStateContextProps {
 }
 const BattleStateContext = React.createContext<BattleStateContextProps | undefined>(undefined);
 
+// --- MOVE useBattleState OUTSIDE the main component --- 
 function useBattleState() {
     const context = React.useContext(BattleStateContext);
     if (!context) {
@@ -152,6 +156,7 @@ interface SceneContentProps {
     p2IntroAnim: string | null;
     player1Health: number;
     player2Health: number;
+    isPaused: boolean; // <-- Destructure isPaused
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
@@ -167,12 +172,13 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     p2IntroAnim,
     player1Health,
     player2Health,
+    isPaused, // <-- Destructure isPaused
 }: SceneContentProps) => {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
     const aiInputRef = useRef<InputState>({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
     const controlsRef = useRef<any>(null);
-    const { scene } = useThree();
+    const { scene, camera } = useThree();
     const { setPlayer1Health, setPlayer2Health } = useBattleState();
 
     // --- State ---
@@ -186,6 +192,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     const [showFightText, setShowFightText] = useState(false);
     const [winnerName, setWinnerName] = useState<string | null>(null);
     const [showWinnerBanner, setShowWinnerBanner] = useState(false);
+    const [frozenCamState, setFrozenCamState] = useState<{ position: THREE.Vector3, target: THREE.Vector3 } | null>(null); // <-- State for frozen camera
 
     // --- Create materials for the side walls (AFTER texture state) ---
     const leftWallMaterial = useMemo(() => {
@@ -256,8 +263,44 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
         );
     }, [floorTextureUrl]); // Depend only on the URL
 
+    // --- Effect to capture camera state on pause --- 
+    useEffect(() => {
+        if (isPaused) {
+            const p1Group = player1Ref.current?.getMainGroup();
+            const p2Group = player2Ref.current?.getMainGroup();
+            // Calculate the current target based on the *last known* midpoint
+            // This might need adjustment if pausing outside FIGHT phase
+            let targetX = 0;
+            if (p1Group && p2Group) {
+                 targetX = (p1Group.position.x + p2Group.position.x) / 2;
+            } else if (p1Group) { // Fallback if only P1 exists (intro?)
+                targetX = p1Group.position.x;
+            } else if (p2Group) { // Fallback if only P2 exists (intro?)
+                 targetX = p2Group.position.x;
+            } // Default to 0 if neither exists yet
+            
+            const currentTarget = new THREE.Vector3(targetX, CAM_LOOKAT_Y, 0);
+            const currentPosition = camera.position.clone();
+            console.log("[SceneContent] Pausing. Freezing camera at:", { pos: currentPosition, target: currentTarget });
+            setFrozenCamState({ position: currentPosition, target: currentTarget });
+        } else {
+            console.log("[SceneContent] Resuming. Clearing frozen camera state.");
+            setFrozenCamState(null); // Clear frozen state on resume
+        }
+    // Add camera as dependency? It might cause loops. Let's try without first.
+    }, [isPaused, player1Ref, player2Ref]); 
+
     useFrame((state, delta) => {
-        const { camera } = state;
+        // <-- PAUSE CHECK: Explicitly set camera state if paused -->
+        if (isPaused && frozenCamState) {
+            camera.position.copy(frozenCamState.position);
+            camera.lookAt(frozenCamState.target);
+            camera.updateProjectionMatrix(); // Ensure projection matrix is updated
+            return; // Stop further updates for this frame
+        }
+        // If not paused, frozenCamState should be null, proceed normally.
+
+        // const { camera } = state; // Moved camera destructuring up // <-- REMOVE this duplicate destructuring
         // Refs required for ANY logic below
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
@@ -419,6 +462,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP1Ready(true); }}
                 currentHealth={player1Health}
+                isPaused={isPaused} // <-- Pass isPaused
             />
             <PlayerCharacter
                 ref={player2Ref}
@@ -433,13 +477,15 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP2Ready(true); }}
                 currentHealth={player2Health}
+                isPaused={isPaused} // <-- Pass isPaused
             />
 
             <AIController
                 playerRef={player2Ref}
                 opponentRef={player1Ref}
-                isActive={isAIActive} // Use the prop passed down
+                isActive={isAIActive}
                 aiInputRef={aiInputRef}
+                isPaused={isPaused} // <-- Pass isPaused
             />
 
             {/* Ground Plane */}
@@ -447,9 +493,9 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 rotation={[-Math.PI / 2, 0, 0]}
                 position={[0, GROUND_LEVEL, 0]}
                 receiveShadow
+                key={loadedFloorTexture ? loadedFloorTexture.uuid : 'no-floor-texture'}
             >
                 <planeGeometry args={[50, 50]} />
-                {/* Apply floor texture from state conditionally */}
                 {loadedFloorTexture ? (
                      <meshStandardMaterial map={loadedFloorTexture} color="#ffffff" />
                 ) : (
@@ -481,6 +527,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
 
 // --- BattleScene Component (Exported - Manages State & Renders Canvas + UI) ---
 export function BattleScene({
+    player1Id,
     player1ModelUrl,
     player2ModelUrl,
     player1Name,
@@ -501,16 +548,75 @@ export function BattleScene({
     const [showFightText, setShowFightText] = useState(false);
     const [winnerName, setWinnerName] = useState<string | null>(null);
     const [showWinnerBanner, setShowWinnerBanner] = useState(false);
+    const [isPaused, setIsPaused] = useState(false); // <-- Pause State
+    const [showPauseMenu, setShowPauseMenu] = useState(false); // <-- Menu Visibility State
+    const fightStartTriggeredRef = useRef(false); // <-- Ref to track if FIGHT sequence ran
+    const [restartCounter, setRestartCounter] = useState(0); // <-- State to trigger remount
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
+    const router = useRouter(); // <-- Get router instance
+
+    // --- Effect to Reset State on Restart --- 
+    useEffect(() => {
+        // Skip the initial mount (restartCounter === 0)
+        if (restartCounter > 0) {
+            console.log("[BattleScene] Restart triggered. Resetting states.");
+            setPlayer1Health(MAX_HEALTH);
+            setPlayer2Health(MAX_HEALTH);
+            setIsAIEnabled(false);
+            setFightPhase('LOADING'); // Go back to loading to re-trigger the intro sequence
+            setP1IntroAnim(null);
+            setP2IntroAnim(null);
+            setShowReadyText(false);
+            setShowFightText(false);
+            setWinnerName(null);
+            setShowWinnerBanner(false);
+            setIsPaused(false);
+            setShowPauseMenu(false);
+            fightStartTriggeredRef.current = false;
+        }
+    }, [restartCounter]);
 
     const versusSoundUrl = '/sounds/voices/versus.mp3';
     const readySoundUrl = '/sounds/voices/ready.mp3';
     const fightSoundUrl = '/sounds/voices/fight.mp3';
     const winsSoundUrl = '/sounds/voices/wins.mp3'; // Add wins sound URL
 
+    // --- Effect to Handle Pause Key Press ---
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Enter') {
+                // Only allow pausing/unpausing during READY or FIGHT
+                if (fightPhase === 'FIGHT' || fightPhase === 'READY') { // <-- Removed PRE_FIGHT
+                    setIsPaused((prevPaused) => {
+                        const nextPaused = !prevPaused;
+                        setShowPauseMenu(nextPaused); // Sync menu visibility
+                        if (nextPaused) {
+                            playSoundEffect('/sounds/effects/pause.mp3'); // Play pause sound only when pausing
+                        }
+                        console.log(`[BattleScene] Pause Toggled: ${nextPaused}`);
+                        return nextPaused;
+                    });
+                } else {
+                    console.log(`[BattleScene] Pause prevented. Fight Phase: ${fightPhase}`);
+                }
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [fightPhase]); // Re-attach listener if fightPhase changes (ensures correct phase check)
+
     // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
+        // <-- PAUSE CHECK: Prevent phase transitions while paused -->
+        if (isPaused) {
+            console.log(`[BattleScene Phase Effect] Paused. Skipping transition for phase ${fightPhase}.`);
+            return;
+        }
+
         console.log(`[BattleScene] Fight Phase Changed: ${fightPhase}`);
         let phaseTimer: NodeJS.Timeout | undefined;
         let soundDelayTimer: NodeJS.Timeout | undefined;
@@ -541,7 +647,7 @@ export function BattleScene({
             case 'PRE_FIGHT':
                 console.log("[BattleScene] Entered PRE_FIGHT. Starting 2.2s timer for READY phase...");
                 phaseTimer = setTimeout(() => {
-                     if (fightPhase === 'PRE_FIGHT') {
+                     if (fightPhase === 'PRE_FIGHT' && !isPaused) {
                           setFightPhase('READY');
                      }
                  }, 2200);
@@ -551,16 +657,39 @@ export function BattleScene({
                 setShowReadyText(true);
                 phaseTimer = setTimeout(() => {
                     setShowReadyText(false);
-                    if (fightPhase === 'READY') {
+                    if (fightPhase === 'READY' && !isPaused) {
+                        console.log("[BattleScene Phase Effect - READY timeout] Conditions met. Playing sound, enabling AI, setting ref, setting phase to FIGHT.");
+                        // --- Trigger Fight Sequence Here --- 
+                        playSound(fightSoundUrl);
+                        setIsAIEnabled(true); // Enable AI immediately
+                        fightStartTriggeredRef.current = true; // Mark as triggered
                         setFightPhase('FIGHT');
+                        // Note: setShowFightText is handled in the FIGHT case now
                     }
                 }, 1000);
                 break;
             case 'FIGHT':
-                playSound(fightSoundUrl);
-                setShowFightText(true);
-                setIsAIEnabled(true);
-                phaseTimer = setTimeout(() => setShowFightText(false), 1000);
+                console.log(`[BattleScene Phase Effect - FIGHT] Entering. IsPaused: ${isPaused}, Winner: ${winnerName}`);
+                
+                // Show FIGHT text only when triggered from READY
+                if (fightStartTriggeredRef.current) {
+                    setShowFightText(true);
+                    // Set timeout to hide text shortly after
+                    phaseTimer = setTimeout(() => setShowFightText(false), 1000); // Use phaseTimer for cleanup
+                    fightStartTriggeredRef.current = false; // Consume the trigger flag
+                }
+
+                // Ensure AI state is correct
+                if (!isPaused && !winnerName) {
+                    setIsAIEnabled(true); 
+                } else {
+                    // If resuming or re-entering FIGHT phase after restart (and not game over),
+                    // ensure AI is enabled. It might have been disabled by GAME_OVER or the initial state.
+                    console.log(`[BattleScene Phase Effect - FIGHT] Conditions NOT met or resuming. IsPaused: ${isPaused}, fightStartTriggeredRef: ${fightStartTriggeredRef.current}, Winner: ${winnerName}`);
+                    if (!winnerName) {
+                        setIsAIEnabled(true);
+                    }
+                }
                 break;
              case 'GAME_OVER':
                  setIsAIEnabled(false);
@@ -602,6 +731,7 @@ export function BattleScene({
                  break; // End GAME_OVER case
              case 'LOADING':
                  setIsAIEnabled(false);
+                 fightStartTriggeredRef.current = false; // Reset fight trigger on load
                  setShowReadyText(false);
                  setShowFightText(false);
                  setP1IntroAnim(null);
@@ -615,10 +745,13 @@ export function BattleScene({
              if (phaseTimer) clearTimeout(phaseTimer);
              if (soundDelayTimer) clearTimeout(soundDelayTimer);
         }
-    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl]);
+    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl, isPaused]);
 
     // --- Effect to check for Game Over ---
     useEffect(() => {
+        // <-- PAUSE CHECK: Don't check game over if paused -->
+        if (isPaused) return;
+
         if (fightPhase === 'FIGHT') {
             let determinedWinner: string | null = null;
             if (player1Health <= 0) {
@@ -633,11 +766,33 @@ export function BattleScene({
                 setFightPhase('GAME_OVER');
             }
         }
-    }, [player1Health, player2Health, fightPhase, player1Name, player2Name]);
+    }, [player1Health, player2Health, fightPhase, player1Name, player2Name, isPaused]);
+
+    // --- Pause Menu Handlers ---
+    const handleResume = () => {
+        playSoundEffect('/sounds/effects/confirm.mp3');
+        setIsPaused(false);
+        setShowPauseMenu(false);
+    };
+
+    const handleRestart = () => {
+        playSoundEffect('/sounds/effects/confirm.mp3');
+        // Increment counter to trigger remount via key change
+        setRestartCounter(prev => prev + 1);
+        setIsPaused(false); // Ensure menu closes and state is unpaused
+        setShowPauseMenu(false);
+    };
+
+    const handleBackToSelect = () => {
+        playSoundEffect('/sounds/effects/confirm.mp3');
+        // Navigate back to the VS screen for the original player 1
+        fightStartTriggeredRef.current = false; // Reset trigger on back
+        router.push(`/vs/${player1Id}`);
+    };
 
     return (
         <BattleStateContext.Provider value={battleStateValue}>
-            <>
+            <React.Fragment key={restartCounter}>
                 <Canvas
                     shadows
                     // Keep initial camera settings for the default fight view
@@ -647,7 +802,7 @@ export function BattleScene({
                     <SceneContent
                         player1ModelUrl={player1ModelUrl}
                         player2ModelUrl={player2ModelUrl}
-                        isAIActive={isAIEnabled}
+                        isAIActive={isAIEnabled && !isPaused} // <-- AI Active only if enabled AND not paused
                         backgroundImageUrl={backgroundImageUrl}
                         floorTextureUrl={floorTextureUrl}
                         fightPhase={fightPhase}
@@ -661,6 +816,7 @@ export function BattleScene({
                         p2IntroAnim={p2IntroAnim}
                         player1Health={player1Health}
                         player2Health={player2Health}
+                        isPaused={isPaused} // <-- Pass isPaused down
                     />
                 </Canvas>
 
@@ -680,10 +836,10 @@ export function BattleScene({
                      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
                      zIndex: 3, pointerEvents: 'none', textAlign: 'center'
                  }}>
-                     {showReadyText && <p style={{ fontSize: '4em', color: 'white', fontWeight: 'bold', textShadow: '2px 2px 4px #000000' }}>Ready?</p>}
-                     {showFightText && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
+                     {showReadyText && !isPaused && <p style={{ fontSize: '4em', color: 'white', fontWeight: 'bold', textShadow: '2px 2px 4px #000000' }}>Ready?</p>}
+                     {showFightText && !isPaused && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
                      {/* --- Winner Banner --- */}
-                    {showWinnerBanner && winnerName && (
+                    {showWinnerBanner && winnerName && !isPaused && ( // Hide winner banner if paused
                         <p style={{
                             fontSize: '3.5em',
                             color: '#FFD700',
@@ -696,7 +852,39 @@ export function BattleScene({
                     )}
                  </div>
 
-            </>
+                 {/* --- Pause Menu Overlay --- */}
+                 {showPauseMenu && (
+                     <div style={{
+                         position: 'absolute', inset: 0, zIndex: 10,
+                         backgroundColor: 'rgba(0, 0, 0, 0.7)', // Semi-transparent background
+                         display: 'flex', flexDirection: 'column',
+                         alignItems: 'center', justifyContent: 'center',
+                         color: 'white', fontFamily: 'Arial, sans-serif',
+                         pointerEvents: 'auto' // Enable pointer events for the menu
+                     }}>
+                         <h2 style={{ fontSize: '3em', marginBottom: '40px', textShadow: '2px 2px 4px #000' }}>Paused</h2>
+                         <button onClick={handleResume} style={pauseButtonStyle}>Resume Fight</button>
+                         <button onClick={handleRestart} style={pauseButtonStyle}>Restart Fight</button>
+                         <button onClick={handleBackToSelect} style={pauseButtonStyle}>Back to Fighter Selection</button>
+                     </div>
+                 )}
+
+            </React.Fragment>
         </BattleStateContext.Provider>
     );
-} 
+}
+
+// Basic style for pause menu buttons
+const pauseButtonStyle: React.CSSProperties = {
+    background: 'rgba(50, 50, 50, 0.8)',
+    border: '2px solid #FFD700',
+    color: '#FFD700',
+    padding: '15px 30px',
+    margin: '10px',
+    fontSize: '1.5em',
+    cursor: 'pointer',
+    borderRadius: '5px',
+    minWidth: '300px',
+    textAlign: 'center',
+    transition: 'background-color 0.2s, color 0.2s',
+}; 

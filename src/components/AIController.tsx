@@ -20,6 +20,7 @@ interface AIControllerProps {
     opponentRef: React.RefObject<PlayerCharacterHandle | null>; // Allow null initially
     isActive?: boolean; // To easily enable/disable AI
     aiInputRef: React.MutableRefObject<InputState>; // Add the ref to update
+    isPaused: boolean; // <-- Add isPaused prop
 }
 
 // --- Constants ---
@@ -36,7 +37,8 @@ export const AIController: React.FC<AIControllerProps> = ({
     playerRef,
     opponentRef,
     isActive = true, // Default to active
-    aiInputRef // Get the ref to update
+    aiInputRef, // Get the ref to update
+    isPaused, // <-- Destructure isPaused
 }) => {
     // No need for internal state, update the passed ref directly
     // const aiInputRef = useRef<AIInputState>({...}); 
@@ -61,6 +63,16 @@ export const AIController: React.FC<AIControllerProps> = ({
 
     // --- AI Logic Loop ---
     useFrame((state, delta) => {
+        // <-- PAUSE CHECK: Stop AI logic if paused or inactive -->
+        if (!isActive || isPaused) {
+            // Reset AI input when paused or inactive
+            if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block) {
+                 aiInputRef.current = { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+                 // TODO: Ensure PlayerCharacter reflects this reset
+            }
+            return;
+        }
+
         if (!isActive || !playerRef.current || !opponentRef.current) {
             // Reset inputs if AI becomes inactive
             if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block) {
