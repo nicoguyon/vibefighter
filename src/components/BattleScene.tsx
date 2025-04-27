@@ -507,8 +507,7 @@ export function BattleScene({
     const versusSoundUrl = '/sounds/voices/versus.mp3';
     const readySoundUrl = '/sounds/voices/ready.mp3';
     const fightSoundUrl = '/sounds/voices/fight.mp3';
-    const youWinSoundUrl = '/sounds/voices/you_win.mp3';
-    const youLoseSoundUrl = '/sounds/voices/you_lose.mp3';
+    const winsSoundUrl = '/sounds/voices/wins.mp3'; // Add wins sound URL
 
     // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
@@ -568,12 +567,39 @@ export function BattleScene({
                  setShowReadyText(false);
                  setShowFightText(false);
                  setShowWinnerBanner(true);
-                 if (winnerName === player1Name) {
-                     playSound(youWinSoundUrl);
+
+                 // Play Winner Name Audio then "Wins" Audio
+                 const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
+
+                 if (winnerAudioUrl) {
+                     try {
+                        const nameAudio = new Audio(winnerAudioUrl);
+                        // Define onended handler FIRST
+                        nameAudio.onended = () => {
+                             console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Playing wins sound.`);
+                             // Wait 0.5 seconds after name ends, then play "wins"
+                             soundDelayTimer = setTimeout(() => playSound(winsSoundUrl), 300);
+                        };
+                        nameAudio.onerror = (e) => {
+                             console.error(`[BattleScene] Error loading/playing winner name audio (${winnerAudioUrl}):`, e);
+                             // Fallback: Play "wins" sound immediately if name fails
+                             playSound(winsSoundUrl);
+                        };
+                        nameAudio.play().catch(error => {
+                             // Catch potential play() promise rejection (e.g., user interaction needed)
+                             console.error(`[BattleScene] Error initiating winner name audio playback (${winnerAudioUrl}):`, error);
+                             playSound(winsSoundUrl); // Fallback
+                        });
+                     } catch (error) {
+                         console.error(`[BattleScene] Error creating Audio object for winner name (${winnerAudioUrl}):`, error);
+                         playSound(winsSoundUrl); // Fallback
+                     }
                  } else {
-                     playSound(youLoseSoundUrl);
+                     // No name audio URL, play "wins" sound immediately
+                     console.warn(`[BattleScene] No name audio URL found for winner: ${winnerName}. Playing wins sound directly.`);
+                     playSound(winsSoundUrl);
                  }
-                 break;
+                 break; // End GAME_OVER case
              case 'LOADING':
                  setIsAIEnabled(false);
                  setShowReadyText(false);
@@ -587,9 +613,9 @@ export function BattleScene({
         return () => {
              console.log("[BattleScene] Cleanup: Clearing timers for phase:", fightPhase);
              if (phaseTimer) clearTimeout(phaseTimer);
-             if (soundDelayTimer) clearTimeout(soundDelayTimer); // Ensure sound delay timer is cleared
+             if (soundDelayTimer) clearTimeout(soundDelayTimer);
         }
-    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, youWinSoundUrl, youLoseSoundUrl]);
+    }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl]);
 
     // --- Effect to check for Game Over ---
     useEffect(() => {
@@ -665,7 +691,7 @@ export function BattleScene({
                             textShadow: '3px 3px 6px #000000',
                             whiteSpace: 'nowrap'
                         }}>
-                            {winnerName}<br></br> Wins!
+                            {winnerName}<br /> Wins!
                         </p>
                     )}
                  </div>

@@ -97,6 +97,12 @@ const DEBUG_CYLINDER_RADIUS = 0.09; // Significantly narrower
 const MIN_X = -8;
 const MAX_X = 8;
 
+// Define available animation types FOR VICTORY (Transitions Only for now)
+const VICTORY_ANIMATION_TYPES = ['Hello', 'ArmsCrossed', 'Bow']; // Use for victory poses
+
+// Helper function to pick a random intro animation
+const getRandomVictoryAnimation = () => VICTORY_ANIMATION_TYPES[Math.floor(Math.random() * VICTORY_ANIMATION_TYPES.length)];
+
 // --- Component Definition with forwardRef ---
 export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>(
     (props, ref): React.ReactNode => {
@@ -142,6 +148,10 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const [fallBackwardAction, setFallBackwardAction] = useState<THREE.AnimationAction | null>(null); // <-- ADD State for Fall Action
         const punchIntervalRef = useRef<NodeJS.Timeout | null>(null); // Ref for punch interval timer
         const stanceTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Ref for initial stance delay timeout
+        // Add refs specifically for winner rotation control
+        const winnerRotationTarget = useRef<number | null>(null);
+        const winnerRotationComplete = useRef(false);
+        const victoryAnimPlayed = useRef(false); // To ensure anim plays only once
 
         // --- Effect to synchronize positionRef with prop ---
         useEffect(() => {
@@ -287,11 +297,11 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const fallBackwardClip = useMemo(() => createFallBackwardClip(skeletonRef.current, initialPose), [initialPose]);
 
         // --- NEW: Intro Animation Clips ---
-        const transitionToHelloClip = useMemo(() => createTransitionToHelloClip(skeletonRef.current, initialPose, helloTargets), [initialPose]);
-        const helloWaveLoopClip = useMemo(() => createHelloWaveLoopClip(skeletonRef.current, initialPose, helloTargets), [initialPose]);
-        const transitionToArmsCrossedClip = useMemo(() => createTransitionToArmsCrossedClip(skeletonRef.current, initialPose, armsCrossedTargets), [initialPose]);
-        const armsCrossedBreathClip = useMemo(() => createArmsCrossedBreathClip(skeletonRef.current, armsCrossedTargets, initialPose), [initialPose]);
-        const bowClip = useMemo(() => createBowClip(skeletonRef.current, initialPose), [initialPose]);
+        const transitionToHelloClip = useMemo(() => skeletonRef.current && initialPose ? createTransitionToHelloClip(skeletonRef.current, initialPose, helloTargets) : null, [initialPose]);
+        const helloWaveLoopClip = useMemo(() => skeletonRef.current && initialPose ? createHelloWaveLoopClip(skeletonRef.current, initialPose, helloTargets) : null, [initialPose]);
+        const transitionToArmsCrossedClip = useMemo(() => skeletonRef.current && initialPose ? createTransitionToArmsCrossedClip(skeletonRef.current, initialPose, armsCrossedTargets) : null, [initialPose]);
+        const armsCrossedBreathClip = useMemo(() => skeletonRef.current && initialPose ? createArmsCrossedBreathClip(skeletonRef.current, armsCrossedTargets, initialPose) : null, [initialPose]);
+        const bowClip = useMemo(() => skeletonRef.current && initialPose ? createBowClip(skeletonRef.current, initialPose) : null, [initialPose]);
 
 
         // --- Setup Animation Actions ---
@@ -300,12 +310,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 walkCycleClip, fightStanceClip, idleBreathClip,
                 duckPoseClip, blockPoseClip, duckKickClip,
                 fallBackwardClip,
-                // Add intro clips
+                // Add intro/victory transitions and loops
                 transitionToHelloClip, helloWaveLoopClip,
                 transitionToArmsCrossedClip, armsCrossedBreathClip,
                 bowClip
-            ].filter(Boolean); // Filter out any null clips
-            // @ts-ignore - Filter ensures clips are not null
+            ].filter(Boolean);
+            // @ts-ignore
             return clips as THREE.AnimationClip[];
         }, [
             walkCycleClip, fightStanceClip, idleBreathClip,
@@ -572,57 +582,39 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
              const listener = (e: AnimationFinishedEvent) => {
                 const finishedActionName = Object.keys(actions).find(name => actions[name] === e.action);
-                const finishedClipName = e.action.getClip().name; // Get clip name
-                // console.log(`[PlayerCharacter ${initialFacing} Anim Finished] Action: ${finishedActionName}, Clip: ${finishedClipName}`);
+                const finishedClipName = e.action.getClip().name;
 
-                // --- Handle finishing DYNAMIC Punch --- 
-                if (finishedClipName === 'RightPunch' || finishedClipName === 'LeftPunch') { // Handle both punch types
+                // --- Handle finishing DYNAMIC Punch ---
+                if (finishedClipName === 'RightPunch' || finishedClipName === 'LeftPunch') {
                     console.log(`[PlayerCharacter ${initialFacing} Anim Finished] Dynamic Punch finished.`);
                     isActionInProgress.current = false;
                     isAttackingRef.current = false;
-                    canDamageRef.current = false; // Turn off damage window
-
-                    // --- Cleanup the dynamic action --- 
+                    canDamageRef.current = false;
                     const finishedAction = e.action;
                     const finishedClip = finishedAction.getClip();
-                    
-                    // Stop is likely redundant, but safe
-                    finishedAction.stop(); 
-                    
-                    // Uncache action and clip
-                    if (mixer) { // Check mixer exists before uncaching
-                        mixer.uncacheAction(finishedClip, finishedAction.getRoot());
-                        mixer.uncacheClip(finishedClip);
-                        console.log(`[PlayerCharacter ${initialFacing}] Uncached dynamic punch action/clip.`);
-                    }
-                    // ----------------------------------
-
-                    // Return to idle if conditions met (similar logic as before)
+                    if (mixer) { mixer.uncacheAction(finishedClip, finishedAction.getRoot()); mixer.uncacheClip(finishedClip); }
                     if (canFight && !isBlockingRef.current && !isMovingHorizontally.current && !isDuckingRef.current) {
                         idleAction?.reset().fadeIn(0.3).play();
                     }
-                // --- Handle DuckKick (Keep same logic) --- 
-                } else if (e.action === actions.DuckKick) {
+                }
+                // --- Handle DuckKick ---
+                else if (e.action === actions.DuckKick) {
                     console.log(`[PlayerCharacter ${initialFacing} Anim Finished] DuckKick finished.`);
                     isActionInProgress.current = false;
                     isAttackingRef.current = false;
                     canDamageRef.current = false;
-                    if (canFight) {
-                        // Remain ducking after kick
-                        isDuckingRef.current = true;
-                         // Optionally fade in duck pose action again if needed?
-                         // For now, just stay in the ducked state. 
-                    }
-                // --- RESTORED DUCKPOSE FINISH LOGIC (Keep same logic) ---
-                } else if (e.action === duckAction) {
-                    console.log(`[PlayerCharacter ${initialFacing}] DuckPose animation transition finished.`);
-                    isActionInProgress.current = false; // Allow other actions now
-                    // DO NOT trigger stand up from here anymore.
-                // --- END RESTORATION ---
-                } else if (e.action === actions.BlockPose) { // Separate BlockPose handling
-                     isActionInProgress.current = false; 
+                    if (canFight) isDuckingRef.current = true;
                 }
-                 // --- Handle finishing Intro transitions ---
+                // --- Handle DuckPose ---
+                else if (e.action === duckAction) {
+                    console.log(`[PlayerCharacter ${initialFacing}] DuckPose animation transition finished.`);
+                    isActionInProgress.current = false;
+                }
+                // --- Handle BlockPose ---
+                 else if (e.action === actions.BlockPose) {
+                     isActionInProgress.current = false;
+                 }
+                 // --- Handle finishing Intro transitions (Original logic) ---
                  else if (e.action === actions.TransitionToHello && actions.HelloWaveLoop) {
                      console.log(`[PlayerCharacter ${initialFacing} Intro] TransitionToHello finished. Playing HelloWaveLoop.`);
                      actions.HelloWaveLoop.reset().fadeIn(0.2).play();
@@ -633,19 +625,17 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                      currentIntroLoopAction.current = actions.ArmsCrossedBreath;
                  } else if (e.action === actions.Bow) {
                      console.log(`[PlayerCharacter ${initialFacing} Intro] Bow finished.`);
-                     currentIntroLoopAction.current = null; 
+                     currentIntroLoopAction.current = null;
                  }
-
                  // --- Handle finishing GoToFightStance ---
-                 else if (stanceAction && e.action === stanceAction) { 
+                 else if (stanceAction && e.action === stanceAction) {
                      console.log(`[PlayerCharacter ${initialFacing}] GoToFightStance finished. Playing IdleBreath.`);
                      idleAction?.reset().fadeIn(0.2).play();
-                     isInStance.current = true; 
-                }
+                      isInStance.current = true;
+                 }
             };
             mixer.addEventListener('finished', listener);
             return () => mixer.removeEventListener('finished', listener);
-            // --- ADJUSTED DEPENDENCIES ---
         }, [mixer, actions, canFight, initialFacing]);
 
 
@@ -808,145 +798,212 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
          // --- NEW: Effect to Handle Game Over (Fall) --- 
          useEffect(() => {
              if (fightPhase === 'GAME_OVER' && currentHealth <= 0 && fallBackwardAction && skeletonRef.current) {
-                 console.log(`[PlayerCharacter ${initialFacing}] GAME OVER - Health <= 0. Triggering FallBackward.`);
+                 console.log(`[PlayerCharacter ${initialFacing}] GAME OVER - LOSER Check. Fall Action: ${actions?.FallBackward?.isRunning()}, ActionInProgress: ${isActionInProgress.current}`);
+                  // Check if fall isn't already playing AND ensure no other action is mid-way (like a punch)
+                  if (!actions?.FallBackward?.isRunning() && !isAttackingRef.current) { // Added !isAttackingRef check
+                     mixer?.stopAllAction(); // Stop everything else forcefully
+                     isActionInProgress.current = true; // Prevent interference DURING fall trigger
 
-                 // 1. Stop all other actions immediately
-                 mixer?.stopAllAction();
+                     const currentPose: StartPose = {};
+                     skeletonRef.current.bones.forEach(bone => {
+                         currentPose[bone.name] = { quat: bone.quaternion.clone() };
+                     });
 
-                 // 2. Capture current pose (essential for fall clip starting correctly)
-                 const currentPose: StartPose = {};
-                 skeletonRef.current.bones.forEach(bone => {
-                     currentPose[bone.name] = { quat: bone.quaternion.clone() };
-                 });
-
-                 // 3. Create the fall clip *using the captured start pose*
-                 // Re-create the clip to bake in the start pose
-                 const fallClip = createFallBackwardClip(
-                     skeletonRef.current,
-                     initialPose,
-                     currentPose,
-                     'FallBackward_Dynamic' // Use a different name to avoid conflicts
-                 );
-
-                 if (fallClip) {
-                     // 4. Create and play the dynamic fall action
-                     const dynamicFallAction = mixer.clipAction(fallClip);
-                     dynamicFallAction.setLoop(THREE.LoopOnce, 1);
-                     dynamicFallAction.clampWhenFinished = true;
-                     dynamicFallAction.reset().fadeIn(0.2).play();
-                     console.log(`[PlayerCharacter ${initialFacing}] Playing dynamic FallBackward action.`);
-                     
-                     // Ensure flags are set correctly for the fallen state
-                     isActionInProgress.current = true; // Prevent other actions during fall
-                     isAttackingRef.current = false;
-                     isBlockingRef.current = false;
-                     isDuckingRef.current = false;
-                     isMovingHorizontally.current = false;
-                     isInStance.current = false; // Not in stance when fallen
-                 } else {
-                     console.error(`[PlayerCharacter ${initialFacing}] Failed to create dynamic FallBackward clip.`);
+                     const fallClip = createFallBackwardClip(skeletonRef.current, initialPose, currentPose, 'FallBackward_Dynamic');
+                     if (fallClip) {
+                         const dynamicFallAction = mixer.clipAction(fallClip);
+                         dynamicFallAction.setLoop(THREE.LoopOnce, 1);
+                         dynamicFallAction.clampWhenFinished = true;
+                         dynamicFallAction.reset().fadeIn(0.2).play();
+                         // Note: isActionInProgress remains true while falling animation plays
+                         console.log(`[PlayerCharacter ${initialFacing}] Playing dynamic FallBackward.`);
+                     } else {
+                         console.error(`[PlayerCharacter ${initialFacing}] Failed to create dynamic FallBackward clip.`);
+                         isActionInProgress.current = false; // Reset if fall fails
+                     }
                  }
              }
-         }, [fightPhase, currentHealth, fallBackwardAction, mixer, initialPose, initialFacing]);
+         }, [fightPhase, currentHealth, fallBackwardAction, actions?.FallBackward, mixer, initialPose, initialFacing, skeletonRef]);
 
 
-        // --- Effect to Handle Action Triggers (Only During FIGHT Phase) ---
-        useEffect(() => {
-             if (!canFight || !actions) {
-                 // Log if effect is skipped due to initial checks (optional)
-                 // console.log(`[PlayerCharacter ${initialFacing}] Action Trigger Effect skipped: canFight=${canFight}, actions=${!!actions}`);
-                 return;
+        // --- Effect to Set Up WINNER State --- 
+         useEffect(() => {
+             let setupTimer: NodeJS.Timeout | undefined;
+
+             // Trigger ONLY when phase becomes GAME_OVER and health is positive
+             if (fightPhase === 'GAME_OVER' && currentHealth > 0) {
+                 console.log(`[PlayerCharacter ${initialFacing}] GAME OVER - WINNER Check. Setting up state.`);
+                 if (winnerRotationTarget.current === null) { // Check if not already set up
+                     // Start setup after a delay
+                     setupTimer = setTimeout(() => {
+                         console.log(`[PlayerCharacter ${initialFacing}] Starting delayed VICTORY setup.`);
+                         mixer?.stopAllAction();
+                         winnerRotationTarget.current = -Math.PI / 2; // Target rotation (face camera)
+                         winnerRotationComplete.current = false; // Reset rotation flag
+                         victoryAnimPlayed.current = false; // Reset animation flag
+                         // Reset potentially conflicting state flags *after* delay
+                         isActionInProgress.current = false;
+                         isMovingHorizontally.current = false;
+                         isInStance.current = false; // Winner is not in fight stance anymore
+                     }, 2000); // 2-second delay
+                 }
              }
+             // Reset winner state if phase changes away from GAME_OVER
+             else if (fightPhase !== 'GAME_OVER') {
+                  if (winnerRotationTarget.current !== null) { // Only reset if it was set
+                      console.log(`[PlayerCharacter ${initialFacing}] Resetting WINNER state.`);
+                      winnerRotationTarget.current = null;
+                      winnerRotationComplete.current = false;
+                      victoryAnimPlayed.current = false;
+                  }
+             }
+             // Cleanup function for the effect
+             return () => {
+                  if (setupTimer) clearTimeout(setupTimer);
+             };
+         }, [fightPhase, currentHealth, mixer, initialFacing]); // Minimal dependencies
 
+
+        // --- Guarded Action Trigger Effect --- 
+        useEffect(() => {
+            // *** CRUCIAL: Only allow triggering actions during FIGHT phase ***
+            if (fightPhase !== 'FIGHT') {
+                return;
+            }
+            // Existing checks for canFight and actions are still relevant
+            if (!canFight || !actions) {
+                return;
+            }
+
+            // ... (Keep the internal logic exactly as it was for duck, block, punch, kick triggers) ...
             const currentInput = getEffectiveInputState();
             const shouldBeBlocking = currentInput.block;
             const shouldBeDucking = currentInput.duck;
 
-            // Use the helper functions defined above
-            if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
-                 triggerBlock();
-            } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
-                 stopBlock();
-            }
-            else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
-                triggerDuck();
-            } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
-                triggerStandUp();
-            }
+            if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) triggerBlock();
+            else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) stopBlock();
+            else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) triggerDuck();
+            else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) triggerStandUp();
             else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) {
-                // --- Action Execution Logging --- 
-                if (isDuckingRef.current && actions.DuckKick) { // Check kick action exists
-                     console.log(`[PlayerCharacter ${initialFacing}] Action Trigger: Conditions met for Kick.`);
-                     triggerKick();
-                } else if (!isDuckingRef.current) { // Check not ducking before standard punch
-                     console.log(`[PlayerCharacter ${initialFacing}] Action Trigger: Conditions met for Punch.`);
-                     triggerPunch();
-                }
+                if (isDuckingRef.current && actions.DuckKick) triggerKick();
+                else if (!isDuckingRef.current) triggerPunch();
             }
 
-        }, [actions, isInStance, isActionInProgress, getEffectiveInputState, canFight,
+        }, [actions, isInStance, isActionInProgress, getEffectiveInputState, canFight, fightPhase, // Add fightPhase dependency
             triggerBlock, stopBlock, triggerDuck, triggerStandUp, triggerKick, triggerPunch]); // Add helpers to dependencies
 
 
-        // --- Frame Update (Manual Movement, Jump & Animation Trigger - Gated by canFight) ---
+        // --- Frame Update ---
         useFrame((state, delta) => {
             delta = Math.min(delta, 0.05);
             const group = groupRef.current;
-            if (!group || !isLoaded) return;
+            const modelWrapper = modelWrapperRef.current;
+            if (!group || !isLoaded || !modelWrapper) return;
 
-            // Gatekeeping based on canFight & Conditional Mixer Update
-            if (!canFight) {
+            // --- [PRIORITY 1] Handle GAME OVER States ---
+            if (fightPhase === 'GAME_OVER') {
+                // --- Loser Logic --- 
+                if (currentHealth <= 0) {
+                    // Only update mixer for fall animation
+                    if (actions?.FallBackward?.isRunning() && mixer) {
+                        mixer.update(delta);
+                    }
+                    return; // Stop ALL other updates for loser
+                }
+                // --- Winner Logic --- 
+                else {
+                    const targetY = winnerRotationTarget.current;
+                    // 1. Rotate Winner
+                    if (targetY !== null && !winnerRotationComplete.current) {
+                        const currentY = modelWrapper.rotation.y;
+                        const rotationThreshold = 0.05;
+                        modelWrapper.rotation.y = THREE.MathUtils.lerp(currentY, targetY, 0.08);
+                        if (Math.abs(currentY - targetY) < rotationThreshold) {
+                            winnerRotationComplete.current = true;
+                            modelWrapper.rotation.y = targetY; // Snap
+                            console.log(`[PlayerCharacter ${initialFacing}] Victory rotation complete.`);
+                        }
+                    }
+                    // 2. Play Victory Animation (ONCE after rotation)
+                    else if (winnerRotationComplete.current && !victoryAnimPlayed.current) {
+                        victoryAnimPlayed.current = true; // Prevent re-triggering
+                        const animName = getRandomVictoryAnimation();
+                        let victoryAction: THREE.AnimationAction | undefined | null = null;
+
+                        console.log(`[PlayerCharacter ${initialFacing}] Playing victory anim: ${animName}`);
+                        switch (animName) {
+                            case 'Hello':       victoryAction = actions?.TransitionToHello; break;
+                            case 'ArmsCrossed': victoryAction = actions?.TransitionToArmsCrossed; break;
+                            case 'Bow':         victoryAction = actions?.Bow; break;
+                        }
+
+                        if (victoryAction) {
+                            victoryAction.reset().fadeIn(0.3).play();
+                        } else {
+                            console.warn(`[PlayerCharacter ${initialFacing}] Victory animation action "${animName}" not found!`);
+                        }
+                    }
+
+                    // Always update mixer for winner (rotation lerp or anim)
+                    if (mixer) mixer.update(delta);
+                    return; // Stop ALL other updates for winner
+                }
+            } // --- End GAME_OVER block ---
+
+
+            // --- [PRIORITY 2] Handle Non-Fighting Phases (Intro, Pre-Fight, Loading) ---
+            // This block now runs ONLY if fightPhase is NOT GAME_OVER
+            if (!canFight) { // Covers Intro, Pre-Fight, Loading etc.
                  manualVelocityRef.current = { x: 0, y: 0, z: 0 };
                  group.position.copy(positionRef.current);
 
-                 // Explicit checks for each potentially running action
+                 // Update mixer ONLY for relevant non-fight animations
                  let shouldUpdateMixer = false;
-                 const introLoop = currentIntroLoopAction.current; // Cache the ref value
-                 // Check if introLoop is not null *and* isRunning
-                 if (introLoop && introLoop.isRunning()) {
-                     shouldUpdateMixer = true;
-                 // Check action exists *and* isRunning for others
-                 } else if (actions?.TransitionToHello && actions.TransitionToHello.isRunning()) {
-                     shouldUpdateMixer = true;
-                 } else if (actions?.TransitionToArmsCrossed && actions.TransitionToArmsCrossed.isRunning()) {
-                     shouldUpdateMixer = true;
-                 } else if (actions?.Bow && actions.Bow.isRunning()) {
-                     shouldUpdateMixer = true;
-                 } else if (actions?.GoToFightStance && actions.GoToFightStance.isRunning()) {
-                     shouldUpdateMixer = true;
-                 }
+                 // ... (keep existing checks for Intro, Pre-Fight anims) ...
+                 const introLoop = currentIntroLoopAction.current;
+                 if (introLoop && introLoop.isRunning()) shouldUpdateMixer = true;
+                 else if (actions?.TransitionToHello?.isRunning()) shouldUpdateMixer = true;
+                 else if (actions?.TransitionToArmsCrossed?.isRunning()) shouldUpdateMixer = true;
+                 else if (actions?.Bow?.isRunning()) shouldUpdateMixer = true;
+                 else if (actions?.GoToFightStance?.isRunning()) shouldUpdateMixer = true;
 
-                 if (shouldUpdateMixer && mixer) { // Also check mixer exists
+
+                 if (shouldUpdateMixer && mixer) {
                      mixer.update(delta);
                  }
-                 return;
+                 return; // Prevent physics/movement
             }
 
-            // --- FIGHT PHASE LOGIC ---
+
+            // --- [PRIORITY 3] FIGHT PHASE LOGIC (Physics, Movement, Standard Anims) ---
+            // This block runs ONLY if fightPhase is FIGHT
+            // ***** Keep this block exactly as it was when movement worked *****
             const currentPos = positionRef.current;
             const velocity = manualVelocityRef.current;
-            const currentInput = getEffectiveInputState();
+            const currentInput = getEffectiveInputState(); // Get input here for physics
             let targetVelocityX = 0;
             const isGrounded = hasHitGround.current && currentPos.y <= GROUND_LEVEL;
 
             // Horizontal Movement
-            if (!isActionInProgress.current && isGrounded) {
+            if (!isActionInProgress.current && isGrounded) { // Revert to simpler check maybe?
                  if (currentInput.left || currentInput.right) {
                     targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
-                }
+                 }
             }
-            if (isGrounded) { velocity.x = targetVelocityX; }
+             if (isGrounded) { velocity.x = targetVelocityX; }
 
             // Vertical Movement (Jump & Gravity)
             if (currentInput.jump && isGrounded && !isActionInProgress.current) {
                 velocity.y = JUMP_FORCE;
-                if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
-                else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
-                else velocity.x = 0;
+                 if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
+                 else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
+                 else velocity.x = 0; // Keep jump X velocity setting
             }
-            if (!isGrounded || velocity.y > 0) { velocity.y -= GRAVITY * delta; }
+            if (!isGrounded || velocity.y > 0) {
+                velocity.y -= GRAVITY * delta;
+            }
 
-            // --- NEW: Boundary Checks Before Position Update ---
+            // Boundary Checks
             const nextX = currentPos.x + velocity.x * delta;
             if (nextX <= MIN_X || nextX >= MAX_X) {
                 velocity.x = 0; // Stop horizontal movement if next step is out of bounds
@@ -980,10 +1037,11 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 isMovingHorizontally.current = isCurrentlyMovingHorizontallyOnGround;
             }
 
-            // Mixer update MUST happen every frame during the fight phase
-            if (mixer) { // Check mixer exists
+            // Mixer update for FIGHT phase
+            if (mixer) {
                 mixer.update(delta);
             }
+            // ***** End of FIGHT phase logic block *****
 
         }); // End useFrame
 
