@@ -552,6 +552,7 @@ export function BattleScene({
     const [showPauseMenu, setShowPauseMenu] = useState(false); // <-- Menu Visibility State
     const fightStartTriggeredRef = useRef(false); // <-- Ref to track if FIGHT sequence ran
     const [restartCounter, setRestartCounter] = useState(0); // <-- State to trigger remount
+    const gameOverMenuTimerRef = useRef<NodeJS.Timeout | null>(null); // <-- Ref for the GAME_OVER menu timer
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
     const router = useRouter(); // <-- Get router instance
@@ -699,34 +700,54 @@ export function BattleScene({
 
                  // Play Winner Name Audio then "Wins" Audio
                  const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
+                 let winsSoundPlayed = false; // Flag to ensure pause timer starts only once
+
+                 const playWinsAndStartTimer = () => {
+                     if (winsSoundPlayed) return; // Prevent duplicate timers
+                     winsSoundPlayed = true;
+                     console.log("[BattleScene GAME_OVER] Playing wins sound.");
+                     playSound(winsSoundUrl);
+                     // --- START 5-SECOND PAUSE MENU TIMER ---
+                     console.log("[BattleScene GAME_OVER] Starting 5s timer to show Game Over menu.");
+                     // Store timer ID in the specific ref
+                     gameOverMenuTimerRef.current = setTimeout(() => {
+                         // Check again if still in GAME_OVER and not manually paused before showing menu
+                         if (fightPhase === 'GAME_OVER' && !isPaused) {
+                             console.log("[BattleScene GAME_OVER] 5s timer finished. Showing Game Over menu.");
+                             setIsPaused(true); // Set paused state
+                             setShowPauseMenu(true); // Show the menu UI
+                         }
+                         // No need for else log here, it's handled by the check
+                         gameOverMenuTimerRef.current = null; // Clear ref after execution/check
+                     }, 5000); // 5000ms = 5 seconds
+                     // --- END 5-SECOND PAUSE MENU TIMER ---
+                 };
 
                  if (winnerAudioUrl) {
                      try {
                         const nameAudio = new Audio(winnerAudioUrl);
-                        // Define onended handler FIRST
                         nameAudio.onended = () => {
-                             console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Playing wins sound.`);
-                             // Wait 0.5 seconds after name ends, then play "wins"
-                             soundDelayTimer = setTimeout(() => playSound(winsSoundUrl), 300);
+                             console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Starting wins sequence.`);
+                             // Wait a bit after name ends, then play "wins" and start timer
+                             soundDelayTimer = setTimeout(playWinsAndStartTimer, 300);
                         };
                         nameAudio.onerror = (e) => {
                              console.error(`[BattleScene] Error loading/playing winner name audio (${winnerAudioUrl}):`, e);
-                             // Fallback: Play "wins" sound immediately if name fails
-                             playSound(winsSoundUrl);
+                             // Fallback: Play "wins" sound immediately and start timer
+                             playWinsAndStartTimer();
                         };
                         nameAudio.play().catch(error => {
-                             // Catch potential play() promise rejection (e.g., user interaction needed)
                              console.error(`[BattleScene] Error initiating winner name audio playback (${winnerAudioUrl}):`, error);
-                             playSound(winsSoundUrl); // Fallback
+                             playWinsAndStartTimer(); // Fallback
                         });
                      } catch (error) {
                          console.error(`[BattleScene] Error creating Audio object for winner name (${winnerAudioUrl}):`, error);
-                         playSound(winsSoundUrl); // Fallback
+                         playWinsAndStartTimer(); // Fallback
                      }
                  } else {
-                     // No name audio URL, play "wins" sound immediately
                      console.warn(`[BattleScene] No name audio URL found for winner: ${winnerName}. Playing wins sound directly.`);
-                     playSound(winsSoundUrl);
+                     // No name audio, play "wins" and start timer immediately
+                     playWinsAndStartTimer();
                  }
                  break; // End GAME_OVER case
              case 'LOADING':
@@ -744,6 +765,12 @@ export function BattleScene({
              console.log("[BattleScene] Cleanup: Clearing timers for phase:", fightPhase);
              if (phaseTimer) clearTimeout(phaseTimer);
              if (soundDelayTimer) clearTimeout(soundDelayTimer);
+             // Also clear the specific game over menu timer if it exists
+             if (gameOverMenuTimerRef.current) {
+                 clearTimeout(gameOverMenuTimerRef.current);
+                 gameOverMenuTimerRef.current = null;
+                 console.log("[BattleScene] Cleanup: Cleared GAME_OVER menu timer.");
+             }
         }
     }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl, isPaused]);
 
@@ -777,6 +804,13 @@ export function BattleScene({
 
     const handleRestart = () => {
         playSoundEffect('/sounds/effects/confirm.mp3');
+        // --- Explicitly clear the game over menu timer --- 
+        if (gameOverMenuTimerRef.current) {
+            clearTimeout(gameOverMenuTimerRef.current);
+            gameOverMenuTimerRef.current = null;
+            console.log("[BattleScene handleRestart] Cleared pending GAME_OVER menu timer.");
+        }
+        // ---------------------------------------------------
         // Increment counter to trigger remount via key change
         setRestartCounter(prev => prev + 1);
         setIsPaused(false); // Ensure menu closes and state is unpaused
@@ -862,8 +896,14 @@ export function BattleScene({
                          color: 'white', fontFamily: 'Arial, sans-serif',
                          pointerEvents: 'auto' // Enable pointer events for the menu
                      }}>
-                         <h2 style={{ fontSize: '3em', marginBottom: '40px', textShadow: '2px 2px 4px #000' }}>Paused</h2>
-                         <button onClick={handleResume} style={pauseButtonStyle}>Resume Fight</button>
+                         {/* --- Conditional Title --- */}
+                         <h2 style={{ fontSize: '3em', marginBottom: '40px', textShadow: '2px 2px 4px #000' }}>
+                             {fightPhase === 'GAME_OVER' ? 'Game Over' : 'Paused'}
+                         </h2>
+                         {/* --- Conditional Resume Button --- */}
+                         {fightPhase !== 'GAME_OVER' && (
+                            <button onClick={handleResume} style={pauseButtonStyle}>Resume Fight</button>
+                         )}
                          <button onClick={handleRestart} style={pauseButtonStyle}>Restart Fight</button>
                          <button onClick={handleBackToSelect} style={pauseButtonStyle}>Back to Fighter Selection</button>
                      </div>
