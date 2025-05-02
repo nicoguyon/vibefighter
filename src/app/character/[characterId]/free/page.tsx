@@ -19,6 +19,7 @@ import {
     createBowClip,
     createLeftPunchClip, // <-- ADDED IMPORT
     createFallBackwardClip, // <-- ADDED IMPORT
+    createSpecialPowerThrowClip, // <-- ADDED IMPORT
     defaultFightStanceTargets,
     blockTargets,
     duckTargets,
@@ -101,6 +102,7 @@ export default function CharacterPoseEditor() {
     const [bowAction, setBowAction] = useState<THREE.AnimationAction | null>(null);
     const [leftPunchAction, setLeftPunchAction] = useState<THREE.AnimationAction | null>(null); // <-- ADDED STATE
     const [fallBackwardAction, setFallBackwardAction] = useState<THREE.AnimationAction | null>(null); // <-- ADDED STATE
+    const [specialPowerThrowAction, setSpecialPowerThrowAction] = useState<THREE.AnimationAction | null>(null); // <-- ADDED STATE
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentPoseState, setCurrentPoseState] = useState<PoseState>('initial');
     const [capturedStancePose, setCapturedStancePose] = useState<StartPose | null>(null); // <-- ADDED STATE
@@ -495,6 +497,21 @@ export default function CharacterPoseEditor() {
                  } else { console.error("[Editor] Failed to create Fall Backward Clip/Action."); }
              }
 
+             // Create Special Power Throw Action (if not already created)
+             if (!specialPowerThrowAction) {
+                 // Create a placeholder clip initially. It will be replaced dynamically.
+                 const placeholderClip = createSpecialPowerThrowClip(skeleton, initialPose, null); 
+                 if (placeholderClip) {
+                     const action = mixer.clipAction(placeholderClip);
+                     action.setLoop(THREE.LoopOnce, 1);
+                     action.clampWhenFinished = false; // Return to initial after throw
+                     setSpecialPowerThrowAction(action);
+                     console.log("[Editor] Special Power Throw Action created (placeholder).");
+                 } else { 
+                     console.error("[Editor] Failed to create placeholder Special Power Throw Clip/Action."); 
+                 }
+             }
+
         } else {
              // Clear actions if mixer/skeleton/pose become unavailable
              if (resetPoseAction) { resetPoseAction.stop(); setResetPoseAction(null); }
@@ -512,6 +529,7 @@ export default function CharacterPoseEditor() {
              if (bowAction) { bowAction.stop(); setBowAction(null); }
              if (leftPunchAction) { leftPunchAction.stop(); setLeftPunchAction(null); } // <-- ADDED CLEANUP
              if (fallBackwardAction) { fallBackwardAction.stop(); setFallBackwardAction(null); } // <-- ADDED CLEANUP
+             if (specialPowerThrowAction) { specialPowerThrowAction.stop(); setSpecialPowerThrowAction(null); } // <-- ADDED CLEANUP
              setIsPlaying(false); // Reset playing state
              setCurrentPoseState('initial'); // Reset pose state
         }
@@ -525,7 +543,7 @@ export default function CharacterPoseEditor() {
              // idleBreathAction?.stop();
         };
         // Depend on mixer, skeleton, initialPose. Also include action states to recreate if they somehow get nullified.
-    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction]); // <-- ADDED DEPENDENCY
+    }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction]); // <-- ADDED DEPENDENCY
     
     // --- Setup Animation Listener --- // Handles transitions after animations finish
     useEffect(() => {
@@ -614,6 +632,13 @@ export default function CharacterPoseEditor() {
                 setCurrentPoseState('fallen'); // Define a 'fallen' state if needed
                 setIsPlaying(false); // Fall sequence finished
                 setAutoRotate(false); // Keep rotation off
+            } else if (event.action.getClip().name === 'SpecialPowerThrow') {
+                console.log("[Editor] Special Power Throw Finished. Starting Idle Breath.");
+                setCurrentPoseState('stance'); // Assume return to stance for now
+                setIsPlaying(false);
+                if (idleBreathAction && idleBreathAction.weight === 0) {
+                    idleBreathAction.reset().fadeIn(0.3).play();
+                }
             }
         };
 
@@ -625,7 +650,7 @@ export default function CharacterPoseEditor() {
             console.log("[Editor] Removed 'finished' listener.");
         };
         // Ensure listener has access to the latest actions and state setters
-    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, leftPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, fallBackwardAction, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [mixer, fightStanceAction, resetPoseAction, idleBreathAction, rightPunchAction, leftPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, fallBackwardAction, specialPowerThrowAction, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
     
     // --- Live Update Pose (Keep definition) ---
     useEffect(() => {
@@ -717,6 +742,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play reset with fade in
         resetPoseAction.reset().fadeIn(0.2).play();
@@ -780,7 +806,7 @@ export default function CharacterPoseEditor() {
         // Apply all updates to Leva
         setLevaControls(updates);
 
-    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]);
+    }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]);
 
     // --- Fight Stance Handler (Update for fades and state) ---
     const triggerFightStance = useCallback(() => {
@@ -806,6 +832,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         
         // Play stance with fade in
         fightStanceAction.reset().fadeIn(0.2).play();
@@ -850,7 +877,7 @@ export default function CharacterPoseEditor() {
         setLevaControls(updates);
         setLevaInitialized(true); // Ensure Leva knows it's been intentionally set
 
-    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [fightStanceAction, resetPoseAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Walk Cycle Handler ---
     const triggerWalkCycle = useCallback(() => {
@@ -875,13 +902,14 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play walk cycle with fade in (loops)
         walkCycleAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for walk cycle
 
-    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [walkCycleAction, resetPoseAction, fightStanceAction, idleBreathAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Right Punch Handler ---
     const triggerRightPunch = useCallback(() => {
@@ -954,6 +982,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2);
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play the NEW action (which is now also in state)
         newAction.reset().fadeIn(0.2).play();
@@ -981,6 +1010,7 @@ export default function CharacterPoseEditor() {
         bowAction, 
         leftPunchAction, // <-- ADDED DEPENDENCY
         fallBackwardAction, // <-- ADDED DEPENDENCY
+        specialPowerThrowAction, // <-- ADDED DEPENDENCY
         // State setters
         setRightPunchAction, 
         setAutoRotate, 
@@ -1011,6 +1041,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play block animation with fade in (plays once, clamps)
         blockPoseAction.reset().fadeIn(0.2).play();
@@ -1055,7 +1086,7 @@ export default function CharacterPoseEditor() {
              console.warn("[Editor] Imported blockTargets constant is missing?"); // Should not happen
         }
 
-    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [blockPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Duck Pose Handler ---
     const triggerDuckPose = useCallback(() => {
@@ -1080,6 +1111,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play duck animation with fade in (plays once, clamps)
         duckPoseAction.reset().fadeIn(0.2).play();
@@ -1113,7 +1145,7 @@ export default function CharacterPoseEditor() {
              console.warn("[Editor] Imported duckTargets constant is missing?");
         }
 
-    }, [duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setLevaControls, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Duck Kick Handler ---
     const triggerDuckKick = useCallback(() => {
@@ -1143,13 +1175,14 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play kick animation with fade in (plays once, clamps back to duck)
         duckKickAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls for kick
 
-    }, [duckKickAction, duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState, currentPoseState]); // <-- ADDED DEPENDENCY
+    }, [duckKickAction, duckPoseAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState, currentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Hello Handler ---
     const triggerHello = useCallback(() => {
@@ -1174,13 +1207,14 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play hello transition animation with fade in (plays once)
         transitionToHelloAction.reset().fadeIn(0.2).play();
 
         // DO NOT update Leva controls 
 
-    }, [transitionToHelloAction, helloWaveLoopAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [transitionToHelloAction, helloWaveLoopAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Arms Crossed Handler ---
     const triggerArmsCrossed = useCallback(() => {
@@ -1205,6 +1239,7 @@ export default function CharacterPoseEditor() {
         bowAction?.fadeOut(0.2); // New
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play transition animation (plays once)
         transitionToArmsCrossedAction.reset().fadeIn(0.2).play();
@@ -1212,7 +1247,7 @@ export default function CharacterPoseEditor() {
         // Optional: Update Leva controls to match target pose immediately? 
         // Similar to how triggerFightStance does it, if desired.
 
-    }, [transitionToArmsCrossedAction, armsCrossedBreathAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, bowAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [transitionToArmsCrossedAction, armsCrossedBreathAction, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Bow Handler ---
     const triggerBow = useCallback(() => {
@@ -1237,11 +1272,12 @@ export default function CharacterPoseEditor() {
         armsCrossedBreathAction?.fadeOut(0.2); 
         leftPunchAction?.fadeOut(0.2); // <-- ADDED FADE OUT
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play bow animation (plays once)
         bowAction.reset().fadeIn(0.2).play();
 
-    }, [bowAction, /* list all other actions */ resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, leftPunchAction, fallBackwardAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
+    }, [bowAction, /* list all other actions */ resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, setIsPlaying, setCurrentPoseState]); // <-- ADDED DEPENDENCY
 
     // --- Left Punch Handler ---
     const triggerLeftPunch = useCallback(() => {
@@ -1313,6 +1349,7 @@ export default function CharacterPoseEditor() {
         armsCrossedBreathAction?.fadeOut(0.2);
         bowAction?.fadeOut(0.2);
         fallBackwardAction?.fadeOut(0.2); // <-- ADDED FADE OUT
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play the NEW action (which is now also in state)
         newAction.reset().fadeIn(0.2).play();
@@ -1340,6 +1377,7 @@ export default function CharacterPoseEditor() {
         armsCrossedBreathAction, 
         bowAction, 
         fallBackwardAction, // <-- ADDED DEPENDENCY
+        specialPowerThrowAction, // <-- ADDED DEPENDENCY
         // State setters
         setLeftPunchAction, 
         setAutoRotate, 
@@ -1408,6 +1446,7 @@ export default function CharacterPoseEditor() {
         transitionToArmsCrossedAction?.fadeOut(0.2);
         armsCrossedBreathAction?.fadeOut(0.2);
         bowAction?.fadeOut(0.2);
+        specialPowerThrowAction?.fadeOut(0.2); // <-- ADDED FADE OUT
 
         // Play the NEW action
         newAction.reset().fadeIn(0.2).play();
@@ -1432,10 +1471,105 @@ export default function CharacterPoseEditor() {
         armsCrossedBreathAction, 
         bowAction, 
         fallBackwardAction, // Include the state variable itself
+        specialPowerThrowAction, // <-- ADDED DEPENDENCY
         // State setters
         setFallBackwardAction, 
         setAutoRotate, 
         setIsPlaying, 
+        setCurrentPoseState
+    ]);
+
+    // --- Special Power Throw Handler ---
+    const triggerSpecialPowerThrow = useCallback(() => {
+        if (!skeleton || !mixer || !specialPowerThrowAction) {
+             console.error("[Editor] Cannot trigger Special Power Throw: Skeleton, Mixer or Action missing.");
+             return;
+        }
+
+        // Capture the current pose dynamically
+        const livePose: StartPose = {};
+        skeleton.bones.forEach(bone => {
+            livePose[bone.name] = { quat: bone.quaternion.clone() };
+        });
+        console.log("[Editor] Capturing LIVE pose for Special Power Throw.");
+
+        // CREATE a new clip using the live start pose
+        const newThrowClip = createSpecialPowerThrowClip(
+            skeleton, 
+            initialPose, 
+            livePose, 
+            'SpecialPowerThrow' 
+        );
+
+        if (!newThrowClip) {
+            console.error("[Editor] Failed to create dynamic Special Power Throw Clip.");
+            return;
+        }
+
+        // REPLACE the clip associated with the existing action state
+        const oldAction = specialPowerThrowAction;
+        const oldClip = oldAction.getClip();
+
+        oldAction.stop();
+        mixer.uncacheAction(oldClip, oldAction.getRoot());
+        mixer.uncacheClip(oldClip);
+
+        const newAction = mixer.clipAction(newThrowClip);
+        newAction.setLoop(THREE.LoopOnce, 1);
+        newAction.clampWhenFinished = false; // Ensure it returns to start
+
+        setSpecialPowerThrowAction(newAction); // Update state
+
+        console.log("[Editor] Triggering Special Power Throw with updated clip/action...");
+        setIsPlaying(true); 
+        setCurrentPoseState('transitioning'); // Or maybe 'casting'? For now, use 'transitioning'
+        setAutoRotate(false);
+
+        // Stop all other actions cleanly using fades
+        resetPoseAction?.fadeOut(0.2);
+        fightStanceAction?.fadeOut(0.2);
+        idleBreathAction?.fadeOut(0.2);
+        walkCycleAction?.fadeOut(0.2);
+        rightPunchAction?.fadeOut(0.2);
+        leftPunchAction?.fadeOut(0.2);
+        blockPoseAction?.fadeOut(0.2);
+        duckPoseAction?.fadeOut(0.2);
+        duckKickAction?.fadeOut(0.2); 
+        transitionToHelloAction?.fadeOut(0.2);
+        helloWaveLoopAction?.fadeOut(0.2);
+        transitionToArmsCrossedAction?.fadeOut(0.2);
+        armsCrossedBreathAction?.fadeOut(0.2);
+        bowAction?.fadeOut(0.2);
+        fallBackwardAction?.fadeOut(0.2);
+
+        // Play the NEW action
+        newAction.reset().fadeIn(0.2).play();
+
+    }, [
+        skeleton,
+        mixer,
+        initialPose,
+        // Actions to check/fade out
+        resetPoseAction,
+        fightStanceAction,
+        idleBreathAction,
+        walkCycleAction,
+        rightPunchAction,
+        leftPunchAction,
+        blockPoseAction,
+        duckPoseAction,
+        duckKickAction,
+        transitionToHelloAction,
+        helloWaveLoopAction,
+        transitionToArmsCrossedAction,
+        armsCrossedBreathAction,
+        bowAction,
+        fallBackwardAction,
+        specialPowerThrowAction, // Include the state variable itself
+        // State setters
+        setSpecialPowerThrowAction,
+        setAutoRotate,
+        setIsPlaying,
         setCurrentPoseState
     ]);
 
@@ -1519,6 +1653,10 @@ export default function CharacterPoseEditor() {
                     <button onClick={triggerFallBackward} disabled={!fallBackwardAction || isPlaying} className={`btn-arcade ${(!fallBackwardAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-danger"}`}>
                          Fall Backward
                     </button>
++                    {/* Special Power Throw Button: Disable if action unavailable or currently playing blocking anim */}
++                    <button onClick={triggerSpecialPowerThrow} disabled={!specialPowerThrowAction || isPlaying} className={`btn-arcade ${(!specialPowerThrowAction || isPlaying) ? "btn-arcade-disabled" : "btn-arcade-special"}`}>
++                        Special Throw
++                    </button>
                 </div>
                 <Canvas camera={{ position: [0, 0.5, 1.8], fov: 60 }} shadows >
                     <ambientLight intensity={0.7} />

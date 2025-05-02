@@ -1583,3 +1583,147 @@ export function createFallBackwardClip(
     // This clip should not loop, the animation manager should clamp it at the end.
     return new THREE.AnimationClip(clipName, duration, tracks);
 }
+
+// Define the target pose for the special power preparation (based on screenshot 1)
+export const specialPowerPrepTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
+    // Assume XYZ Order based on Leva screenshot 1
+    'L_Upperarm': { rotation: { x: -13, y: -51, z: -91 }, eulerOrder: 'XYZ' },
+    'L_Forearm':  { rotation: { x: 88, y: 10, z: -50 }, eulerOrder: 'XYZ' },
+    'L_Hand':     { rotation: { x: -10, y: 50, z: 17 }, eulerOrder: 'XYZ' },
+    'R_Upperarm': { rotation: { x: -38, y: 19, z: 117 }, eulerOrder: 'XYZ' },
+    'R_Forearm':  { rotation: { x: 34, y: -38, z: 54 }, eulerOrder: 'XYZ' },
+    'R_Hand':     { rotation: { x: -4, y: 64, z: -10 }, eulerOrder: 'XYZ' },
+};
+
+// Define the target pose for the special power throwing (based on screenshot 2)
+export const specialPowerThrowTargets: Record<string, { rotation: { x: number; y: number; z: number }, eulerOrder: EulerOrder }> = {
+    // Assume XYZ Order based on Leva screenshot 2
+    'L_Upperarm': { rotation: { x: -13, y: -51, z: -107 }, eulerOrder: 'XYZ' },
+    'L_Forearm':  { rotation: { x: 42, y: 0, z: -50 }, eulerOrder: 'XYZ' },
+    'L_Hand':     { rotation: { x: -38, y: 68, z: 99 }, eulerOrder: 'XYZ' },
+    'R_Upperarm': { rotation: { x: -38, y: 19, z: 134 }, eulerOrder: 'XYZ' },
+    'R_Forearm':  { rotation: { x: 74, y: -53, z: 47 }, eulerOrder: 'XYZ' },
+    'R_Hand':     { rotation: { x: -4, y: 125, z: -46 }, eulerOrder: 'XYZ' },
+};
+
+/**
+ * Creates a special power throw animation.
+ * Starts from a provided startPose (or current), moves arms only through prep and throw, then returns.
+ */
+export function createSpecialPowerThrowClip(
+    skeleton: THREE.Skeleton | null,
+    initialPose: Record<string, InitialPoseData>, // Keep for reference if needed, though not directly used for targets
+    startPose: StartPose | null = null,
+    clipName: string = 'SpecialPowerThrow',
+    prepDuration: number = 0.5,   // Time to reach prep pose
+    throwDuration: number = 0.5,  // Time from prep to throw pose
+    prepPoseHoldDuration: number = 0.5, // Time to hold prep pose before throwing
+    holdDuration: number = 1.0,   // Time to hold throw pose
+    returnDuration: number = 0.5 // Time to return to start pose
+): THREE.AnimationClip | null {
+    if (!skeleton || Object.keys(initialPose).length === 0) {
+        console.warn(`[${clipName}] Missing skeleton or initial pose.`);
+        return null;
+    }
+
+    const tracks: THREE.KeyframeTrack[] = [];
+    // Define timings for the 6 keyframes (Start, Prep End, Prep Hold End, Throw End, Throw Hold End, Return End)
+    const prepTime = prepDuration;
+    const prepHoldEndTime = prepTime + prepPoseHoldDuration;
+    const throwTime = prepHoldEndTime + throwDuration;
+    const throwHoldEndTime = throwTime + holdDuration;
+    const totalDuration = throwHoldEndTime + returnDuration;
+    const times = [0, prepTime, prepHoldEndTime, throwTime, throwHoldEndTime, totalDuration];
+
+    const deg = THREE.MathUtils.degToRad;
+    const tmpEuler = new THREE.Euler();
+    const tmpPrepQuat = new THREE.Quaternion();
+    const tmpThrowQuat = new THREE.Quaternion();
+
+    // Identify arm bones
+    const armBones = [
+        'L_Upperarm', 'L_Forearm', 'L_Hand',
+        'R_Upperarm', 'R_Forearm', 'R_Hand'
+    ];
+
+    skeleton.bones.forEach(bone => {
+        const boneName = bone.name;
+        const initial = initialPose[boneName]; // Used only for fallback if startPose missing
+        if (!initial) return;
+
+        // --- Get STARTING pose (Frame 0 / Frame 4 Target) ---
+        let startQuat: THREE.Quaternion;
+        if (startPose && startPose[boneName]) {
+            startQuat = startPose[boneName].quat.clone(); // Use passed start pose
+        } else {
+            console.warn(`[${clipName}] Start pose not found for ${boneName}, using live skeleton pose.`);
+            startQuat = bone.quaternion.clone(); // Fallback to live pose
+        }
+
+        const keyframeValues: number[] = [];
+
+        if (armBones.includes(boneName)) {
+            // --- Animate Arm Bones ---
+
+            // Frame 0: Start Pose
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
+
+            // Frame 1 (prepTime): Reach Preparation Pose
+            const prepTarget = specialPowerPrepTargets[boneName];
+            let calculatedPrepQuat = new THREE.Quaternion().copy(startQuat); // Default to start if no target
+            if (prepTarget) {
+                const r = prepTarget.rotation;
+                tmpEuler.set(deg(r.x), deg(r.y), deg(r.z), prepTarget.eulerOrder);
+                tmpPrepQuat.setFromEuler(tmpEuler);
+                calculatedPrepQuat.copy(tmpPrepQuat);
+                keyframeValues.push(tmpPrepQuat.x, tmpPrepQuat.y, tmpPrepQuat.z, tmpPrepQuat.w);
+            } else {
+                console.warn(`[${clipName}] Prep target missing for arm bone ${boneName}, holding start pose.`);
+                keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Hold start if no target
+            }
+
+            // Frame 2 (prepHoldEndTime): Hold Preparation Pose
+            keyframeValues.push(calculatedPrepQuat.x, calculatedPrepQuat.y, calculatedPrepQuat.z, calculatedPrepQuat.w);
+
+            // Frame 3 (throwTime): Reach Throwing Pose
+            const throwTarget = specialPowerThrowTargets[boneName];
+            let calculatedThrowQuat = new THREE.Quaternion().copy(calculatedPrepQuat); // Default to prep if no target
+            if (throwTarget) {
+                const r = throwTarget.rotation;
+                tmpEuler.set(deg(r.x), deg(r.y), deg(r.z), throwTarget.eulerOrder);
+                tmpThrowQuat.setFromEuler(tmpEuler);
+                calculatedThrowQuat.copy(tmpThrowQuat);
+                keyframeValues.push(tmpThrowQuat.x, tmpThrowQuat.y, tmpThrowQuat.z, tmpThrowQuat.w);
+            } else {
+                console.warn(`[${clipName}] Throw target missing for arm bone ${boneName}, holding prep pose.`);
+                // If no throw target, hold the prep pose calculated above
+                keyframeValues.push(calculatedPrepQuat.x, calculatedPrepQuat.y, calculatedPrepQuat.z, calculatedPrepQuat.w);
+            }
+
+            // Frame 4 (throwHoldEndTime): Hold Throwing Pose
+            keyframeValues.push(calculatedThrowQuat.x, calculatedThrowQuat.y, calculatedThrowQuat.z, calculatedThrowQuat.w);
+
+            // Frame 5 (totalDuration): Return to Start Pose
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w);
+
+        } else {
+            // --- Lock Non-Arm Bones ---
+            // Hold the start pose for all 6 keyframes
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 0 (time 0)
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 1 (prepTime)
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 2 (prepHoldEndTime)
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 3 (throwTime)
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 4 (throwHoldEndTime)
+            keyframeValues.push(startQuat.x, startQuat.y, startQuat.z, startQuat.w); // Frame 5 (totalDuration)
+        }
+
+        // Add track for this bone
+        tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, keyframeValues));
+    });
+
+    if (tracks.length === 0) {
+        console.warn(`[${clipName}] No tracks generated.`);
+        return null;
+    }
+    return new THREE.AnimationClip(clipName, totalDuration, tracks);
+}
