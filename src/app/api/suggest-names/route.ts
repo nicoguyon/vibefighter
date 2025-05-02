@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
-    GoogleGenerativeAI,
-    HarmCategory,
-    HarmBlockThreshold,
-} from "@google/generative-ai";
+    GoogleGenAI,
+} from "@google/genai";
 
 // Basic fetch wrapper with timeout
 async function fetchWithTimeout(resource: string | URL | Request, options: RequestInit & { timeout?: number } = {}) {
@@ -26,12 +24,11 @@ if (!process.env.GEMINI_API_KEY) {
     throw new Error("Missing GEMINI_API_KEY environment variable.");
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Pass API key within an options object
+const genAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash", // Use flash for speed
-    systemInstruction: "You are helping create a character for a retro 90s fighting platform video game. The user will provide an image of a character concept. Suggest 3 potential names. Respond ONLY with a valid JSON array of 3 strings, like [\"Name One\", \"Name Two\", \"Name Three\"]. Do not include any other text or markdown formatting.",
-});
+// Define system instruction separately
+const systemInstruction = "You are helping create a character for a retro 90s fighting platform video game. The user will provide an image of a character concept. Suggest 3 potential names. Respond ONLY with a valid JSON array of 3 strings, like [\"Name One\", \"Name Two\", \"Name Three\"]. Do not include any other text or markdown formatting.";
 
 const generationConfig = {
     temperature: 0.8, // Slightly creative but not too random
@@ -69,18 +66,31 @@ export async function POST(req: NextRequest) {
         const imageBuffer = await imageResponse.arrayBuffer();
         const imageBase64 = Buffer.from(imageBuffer).toString('base64');
 
-        // Prepare the prompt parts for Gemini
-        const promptParts = [
-            { inlineData: { mimeType: contentType, data: imageBase64 } },
+        // Prepare the prompt parts for Gemini, including the system instruction
+        const userPromptParts = [
+            { text: systemInstruction }, // Add system instruction text first
+            //{ text: "\n\nSuggest 3 names for the character in this image." }, // Then the user prompt text
+            { inlineData: { mimeType: contentType, data: imageBase64 } }, // Then the image
         ];
 
         console.log(`Sending image (${contentType}) to Gemini...`);
-        const result = await model.generateContent({ 
-            contents: [{ role: "user", parts: promptParts }],
-            generationConfig 
+        const result = await genAI.models.generateContent({
+            model: "gemini-2.0-flash",
+            // Combine all instructions and data under the 'user' role
+            contents: [
+                { role: "user", parts: userPromptParts }
+            ],
+            ...generationConfig
         });
 
-        const responseText = result.response.text(); 
+        // Access response text directly from result, assuming result is the response object
+        const responseText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+        if (!responseText) {
+            console.error("Could not extract text from Gemini response:", result); // Log the full result
+            throw new Error("Received empty or invalid response structure from Gemini.");
+        }
+
         console.log("Raw Gemini response text:", responseText);
         
         // Attempt to parse the JSON response
