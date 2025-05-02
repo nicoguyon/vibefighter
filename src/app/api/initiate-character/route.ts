@@ -189,15 +189,29 @@ export async function POST(req: NextRequest) {
         if (updateError) {
             console.error("Supabase update error (model task ID):", updateError);
             // Log error but maybe don't fail the whole process?
-            // The client can still poll, but DB might be inconsistent.
         }
 
-        // 6. Return success and the Tripo Task ID
+        // 6. Trigger Special Power Generation (Non-blocking)
+        console.log(`Triggering special power generation for character ${characterId} in background...`);
+        fetch(`${req.nextUrl.origin}/api/create-special-power`, { // Use origin for correct absolute URL
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                characterId: characterId, 
+                conceptImageUrl: r2ImageUrl, // Pass the R2 URL 
+                conceptImageMimeType: contentType // Pass the detected content type
+            }),
+        }).catch(err => {
+            // Log error but don't block the main response
+            console.error(`Failed to trigger special power generation for ${characterId}:`, err);
+        });
+
+        // 7. Return success and the Tripo Task ID (Renumbered from 6)
         return NextResponse.json({ 
             message: "Character modeling initiated.", 
             characterId: characterId,
             taskId: tripoModelTaskId, 
-            conceptImageUrl: r2ImageUrl || r2Key 
+            conceptImageUrl: r2ImageUrl || r2Key // Return R2 URL or key
         }, { status: 200 });
 
     } catch (error: any) {
