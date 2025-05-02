@@ -2,6 +2,7 @@ import { supabase } from '@/lib/supabase/client';
 import { notFound } from 'next/navigation';
 import CharacterViewer from './CharacterViewer';
 import Link from 'next/link';
+import Image from 'next/image';
 
 interface CharacterPageProps {
     params: {
@@ -22,7 +23,7 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
     // For truly server-only access bypassing RLS, initialize a separate admin client here.
     const { data: characterData, error } = await supabase
         .from('characters')
-        .select('id, name, model_glb_url, status, concept_image_url, name_audio_url') // Select audio URL too
+        .select('id, name, model_glb_url, status, concept_image_url, name_audio_url, special_image')
         .eq('id', characterId)
         .single();
 
@@ -48,6 +49,12 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
         finalAudioUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalAudioUrl}`;
     }
 
+    // Construct absolute R2 URL for special image if necessary
+    let finalSpecialImageUrl = characterData.special_image;
+     if (finalSpecialImageUrl && !finalSpecialImageUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
+        finalSpecialImageUrl = `${process.env.NEXT_PUBLIC_R2_PUBLIC_URL}/${finalSpecialImageUrl}`;
+    }
+
     // Handle cases where model isn't ready yet (audio URL doesn't block rendering here)
     if (characterData.status !== 'complete' || !finalModelUrl) {
         return (
@@ -59,7 +66,7 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
         );
     }
 
-    // If complete and URL exists, render the viewer
+    // If complete and URL exists, render the viewer and the image
     return (
         <main className="flex min-h-screen flex-col items-stretch justify-start p-0 relative"> 
             <div className="absolute top-4 left-4 z-10 bg-black/50 p-2 rounded">
@@ -68,7 +75,27 @@ export default async function CharacterPage({ params }: CharacterPageProps) {
                 </h1>
             </div>
            
-            <CharacterViewer modelUrl={finalModelUrl} nameAudioUrl={finalAudioUrl} />
+            {finalSpecialImageUrl && (
+                <div className="absolute top-4 right-4 z-10">
+                     <Image
+                        src={finalSpecialImageUrl}
+                        alt={`${characterData.name || 'Character'} Special Power`}
+                        width={0} 
+                        height={80} 
+                        style={{ 
+                            objectFit: 'contain', 
+                            width: 'auto', 
+                            maxHeight: '120px' 
+                        }} 
+                        sizes="(max-width: 768px) 80px, 120px"
+                    />
+                </div>
+            )}
+           
+            <CharacterViewer 
+                modelUrl={finalModelUrl} 
+                nameAudioUrl={finalAudioUrl}
+            />
 
             {/* Navigation Buttons */}
             <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-10 flex flex-row justify-center gap-4 items-center">

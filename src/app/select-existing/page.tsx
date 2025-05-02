@@ -17,6 +17,7 @@ interface Character {
     concept_image_url: string | null;
     name_audio_url: string | null;
     status: string | null;
+    special_image: string | null;
 }
 
 export default function SelectExistingCharacter() {
@@ -37,7 +38,7 @@ export default function SelectExistingCharacter() {
 
             const { data, error: fetchError } = await supabase
                 .from('characters')
-                .select('id, name, model_glb_url, status, concept_image_url, name_audio_url')
+                .select('id, name, model_glb_url, status, concept_image_url, name_audio_url, special_image')
                 .order('created_at', { ascending: false }); // Or order by name, etc.
 
             if (fetchError) {
@@ -58,6 +59,9 @@ export default function SelectExistingCharacter() {
                     name_audio_url: char.name_audio_url && !char.name_audio_url.startsWith('http') && r2PublicUrl
                         ? `${r2PublicUrl}/${char.name_audio_url}`
                         : char.name_audio_url,
+                    special_image: char.special_image && !char.special_image.startsWith('http') && r2PublicUrl
+                        ? `${r2PublicUrl}/${char.special_image}`
+                        : char.special_image,
                 }));
                 setCharacters(processedData);
             } else {
@@ -198,6 +202,23 @@ export default function SelectExistingCharacter() {
                                 nameAudioUrl={selectedCharacter.name_audio_url ?? undefined}
                             />
                         </div>
+                        {/* Special Power Image Preview (Bottom Right) */}
+                        {selectedCharacter.special_image && (
+                            <div className="absolute bottom-4 right-4 z-20">
+                                <Image
+                                    src={selectedCharacter.special_image}
+                                    alt={`${selectedCharacter.name || 'Character'} Special Power`}
+                                    width={0}
+                                    height={80}
+                                    style={{ 
+                                        objectFit: 'contain', 
+                                        width: 'auto',
+                                        maxHeight: '120px'
+                                    }} 
+                                    sizes="(max-width: 768px) 80px, 120px"
+                                />
+                            </div>
+                        )}
                         {/* Choose Fighter Button Container */}
                         <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 z-30">
                             <button
