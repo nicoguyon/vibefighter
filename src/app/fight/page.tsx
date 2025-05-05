@@ -30,6 +30,7 @@ interface CharacterData {
     name: string;
     modelUrl: string | null;
     nameAudioUrl: string | null;
+    specialImageUrl: string | null;
 }
 
 interface LocationData {
@@ -56,20 +57,21 @@ async function getResourceData(id: string, resourceType: 'character' | 'location
         if (resourceType === 'character') {
             const { data, error } = await supabase
                 .from('characters')
-                .select('id, name, model_glb_url, name_audio_url')
+                .select('id, name, model_glb_url, name_audio_url, special_image')
                 .eq('id', id)
                 .single();
 
             if (error) throw error;
             if (!data?.model_glb_url || !data?.name) throw new Error("Missing name or model_glb_url");
 
-            console.log(`[FightPage] Fetched Character: ${data.name} (ID: ${data.id}, Audio URL: ${!!data.name_audio_url})`);
+            console.log(`[FightPage] Fetched Character: ${data.name} (ID: ${data.id}, Audio URL: ${!!data.name_audio_url}, Special Img: ${!!data.special_image})`);
             return {
                 type: 'character',
                 id: data.id,
                 name: data.name,
                 modelUrl: ensureAbsoluteUrl(data.model_glb_url),
-                nameAudioUrl: ensureAbsoluteUrl(data.name_audio_url)
+                nameAudioUrl: ensureAbsoluteUrl(data.name_audio_url),
+                specialImageUrl: ensureAbsoluteUrl(data.special_image)
             };
         } else if (resourceType === 'location') {
              const { data, error } = await supabase
@@ -220,6 +222,13 @@ export default function FightPage() {
         return <LoadingFallback message="Validating Assets..." />;
     }
 
+    // --- Log Props before rendering BattleScene ---
+    console.log(`[FightPage] Rendering BattleScene with:
+      P1 URL: ${player1Data?.modelUrl}
+      P2 URL: ${player2Data?.modelUrl}
+      BG URL: ${locationData?.backgroundImageUrl}
+      Floor URL: ${locationData?.floorTextureUrl}`);
+
     // --- Render the Scene OR Loading Fallback ---
     return (
         <div style={{ width: '100vw', height: '100vh', overflow: 'hidden', background: '#000', position: 'relative' }}>
@@ -234,6 +243,8 @@ export default function FightPage() {
                     player2Name={player2Data.name}
                     player1NameAudioUrl={player1Data.nameAudioUrl}
                     player2NameAudioUrl={player2Data.nameAudioUrl}
+                    player1SpecialImageUrl={player1Data.specialImageUrl}
+                    player2SpecialImageUrl={player2Data.specialImageUrl}
                     backgroundImageUrl={locationData.backgroundImageUrl}
                     floorTextureUrl={locationData.floorTextureUrl}
                     onSceneVisible={handleSceneVisible} // Pass the callback

@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef, memo, useMemo, forwardRef, useCallback, useImperativeHandle } from 'react';
 import * as THREE from 'three';
 import { useFrame } from '@react-three/fiber';
-import { useGLTF, useAnimations } from '@react-three/drei';
+import { useGLTF, useAnimations, useTexture } from '@react-three/drei';
+import { Texture } from 'three';
 // import { useBox, type BoxProps, type BodyProps } from '@react-three/cannon'; // Keep commented
 // Remove Rapier imports
 
@@ -22,6 +23,7 @@ import {
     createArmsCrossedBreathClip,
     createBowClip,
     createFallBackwardClip,
+    createSpecialPowerThrowClip,
     // --- Target Pose Imports ---
     defaultFightStanceTargets,
     blockTargets,
@@ -33,12 +35,16 @@ import {
     type StartPose
 } from '../lib/animations/clips';
 
+// --- Type imports (Using relative path for now) ---
+// import { FightPhase, InputState, PlayerCharacterHandle } from '../types'; // Assuming types.ts exists at ../types
+// --- Config and Util imports (Using relative path for now) ---
+// import { SPECIAL_POWER_THROW_DURATION_MS } from '../lib/config'; // Relative path - FAILED
+// import { getBonePosition, getGlobalPlayerPosition } from '../lib/utils'; // Relative path - FAILED
 
-// --- NEW: Export Fight Phase Type ---
+
+// --- Local Type Definitions (Copied from previous attempts, adjust as needed) ---
 export type FightPhase = 'LOADING' | 'INTRO_START' | 'INTRO_P1' | 'INTRO_P2' | 'PRE_FIGHT' | 'READY' | 'FIGHT' | 'GAME_OVER';
 
-
-// --- Define Input State Type ---
 export type InputState = {
     left: boolean;
     right: boolean;
@@ -46,9 +52,17 @@ export type InputState = {
     duck: boolean;
     block: boolean;
     jump: boolean;
+    special: boolean;
 };
 
-// Export the handle type directly here
+// ---> ADD THIS TYPE DEFINITION <---
+type LaunchProjectileCallback = (
+    startPosition: THREE.Vector3,
+    directionX: number, // 1 for right, -1 for left
+    textureUrl: string | null,
+    launcherIndex: 1 | 2 // <-- Add launcher index
+) => void;
+
 export interface PlayerCharacterHandle {
     getMainGroup: () => THREE.Group | null;
     getModelWrapper: () => THREE.Group | null;
@@ -57,12 +71,15 @@ export interface PlayerCharacterHandle {
     getHasHitGround: () => boolean;
     isAttacking: () => boolean;
     isDucking: () => boolean;
+    isPerformingSpecialAttack: () => boolean; // <-- Add special attack check
     confirmHit: () => void;
     getCanDamage: () => boolean;
     isBlocking: () => boolean;
+    // --- Add Projectile Methods ---
+    getProjectileState: () => { active: boolean; position: THREE.Vector3 | null };
+    deactivateProjectile: () => void;
 }
 
-// --- Types ---
 interface PlayerCharacterProps {
     modelUrl: string;
     initialPosition: [number, number, number];
@@ -76,6 +93,9 @@ interface PlayerCharacterProps {
     onCharacterReady?: () => void;
     currentHealth: number;
     isPaused: boolean;
+    specialImageUrlProp: string | null; // <-- Add prop for URL
+    onLaunchProjectile: LaunchProjectileCallback; // <-- Callback type updated here
+    playerIndex: 1 | 2; // <-- Add playerIndex prop
 }
 
 interface AnimationFinishedEvent extends THREE.Event {
@@ -84,8 +104,118 @@ interface AnimationFinishedEvent extends THREE.Event {
     direction: number;
 }
 
+// --- ADD Projectile Status Type ---
+type SpecialPowerStatus = 'idle' | 'growing' | 'throwing' | 'hit';
 
-// --- Constants ---
+// --- Projectile Constants (copied from editor) ---
+// Comment out constants relying on external imports for now
+// const GROWTH_DURATION_MS = SPECIAL_POWER_THROW_DURATION_MS * 0.4; // Duration for the projectile to grow
+// const GROWTH_START_DELAY_MS = SPECIAL_POWER_THROW_DURATION_MS * 0.2; // Delay before growth starts
+// Use more reasonable hardcoded durations for testing
+const BASE_THROW_ANIM_DURATION = 1000; // Base duration in ms (adjust as needed)
+const GROWTH_DURATION_MS = BASE_THROW_ANIM_DURATION * 0.4; // e.g., 400ms
+const GROWTH_START_DELAY_MS = BASE_THROW_ANIM_DURATION * 0.2; // e.g., 200ms
+const THROW_DURATION_MS = 800; // Duration for the projectile to travel
+const MAX_THROW_DISTANCE = 20; // Max distance the projectile travels
+const BASE_PLANE_SIZE = 0.5; // Base size of the projectile plane
+
+
+// -------- Special Power Projectile Component Definition --------
+interface SpecialPowerProjectileProps {
+  active: boolean;
+  status: SpecialPowerStatus; // Use the locally defined type
+  initialPosition: [number, number, number];
+  initialScale: [number, number, number];
+  texture: THREE.Texture | null;
+  isFlipped: boolean;
+}
+
+// Wrap with forwardRef
+const SpecialPowerProjectile = forwardRef<THREE.Mesh, SpecialPowerProjectileProps>((
+  {
+    active,
+    status,
+    initialPosition,
+    initialScale,
+    texture,
+    isFlipped,
+  },
+  ref // Receive ref from parent
+) => {
+  // const meshRef = useRef<THREE.Mesh>(null); // Remove local ref
+  const [isVisible, setIsVisible] = useState(false);
+  const startTimeRef = useRef<number | null>(null); // Keep track of activation time
+
+  // Effect to manage visibility and reset state on activation
+  useEffect(() => {
+    if (active && status !== 'idle') {
+      setIsVisible(true);
+      startTimeRef.current = performance.now(); // Record activation time
+      // Use the forwarded ref
+      const mesh = ref && typeof ref !== 'function' ? ref.current : null;
+      if (mesh) {
+        // Reset position and scale to initial values when activated
+        mesh.position.set(...initialPosition);
+        mesh.scale.set(...initialScale);
+        mesh.visible = true; // Ensure mesh is visible
+      }
+    } else {
+      // Delay hiding slightly to prevent flicker if deactivated/reactivated quickly
+      const timer = setTimeout(() => {
+        setIsVisible(false);
+        // Use the forwarded ref
+        const mesh = ref && typeof ref !== 'function' ? ref.current : null;
+        if (mesh) {
+          mesh.visible = false; // Explicitly hide
+        }
+        startTimeRef.current = null; // Reset start time
+      }, 100); // 100ms delay
+      return () => clearTimeout(timer); // Cleanup timer
+    }
+    // Add ref to dependencies? Maybe not needed for this logic.
+  }, [active, status, initialPosition, initialScale, ref]);
+
+  // Effect to handle texture flipping
+  useEffect(() => {
+    if (texture) {
+      texture.wrapS = THREE.RepeatWrapping; // Ensure wrapping is enabled
+      texture.repeat.x = isFlipped ? -1 : 1;
+      texture.offset.x = isFlipped ? 1 : 0; // Offset to correct position after flip
+      texture.needsUpdate = true; // Important: Mark texture for update when repeat/offset changes
+    }
+  }, [texture, isFlipped]);
+
+  // Movement/scaling logic will be handled in the parent PlayerCharacter's useFrame
+  // This component mainly focuses on setup, visibility, and rendering
+
+  // Conditional Rendering: Only render if active, visible, and texture is loaded
+  if (!active || !isVisible || !texture) {
+    return null;
+  }
+
+  // Determine aspect ratio for the plane geometry
+  const aspect = texture.image ? texture.image.width / texture.image.height : 1;
+
+  return (
+    // Assign the forwarded ref to the mesh
+    <mesh ref={ref} position={initialPosition} scale={initialScale} visible={isVisible}>
+      {/* Use aspect ratio in planeGeometry args */}
+      <planeGeometry args={[BASE_PLANE_SIZE * aspect, BASE_PLANE_SIZE]} />
+      {/* Use MeshBasicMaterial for unlit 2D appearance, ensure transparency */}
+      <meshBasicMaterial
+        map={texture}
+        transparent
+        side={THREE.DoubleSide}
+        depthWrite={false} // Render on top of other things potentially
+      />
+    </mesh>
+  );
+});
+SpecialPowerProjectile.displayName = 'SpecialPowerProjectile'; // Add display name for debugging
+// -------- End Special Power Projectile Component Definition --------
+
+
+// --- General Constants ---
 const CHARACTER_WALK_SPEED = 2;
 const GRAVITY = 9.81 * 2;
 const JUMP_FORCE = 7;
@@ -107,6 +237,12 @@ const getRandomVictoryAnimation = () => VICTORY_ANIMATION_TYPES[Math.floor(Math.
 // --- Component Definition with forwardRef ---
 export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerCharacterProps>(
     (props, ref): React.ReactNode => {
+        // --- Log Received Props (Safely) --- 
+        console.log(`[PlayerCharacter ${props?.initialFacing ?? 'UNKNOWN'} ${props?.playerIndex ?? '?'}] Received Props Check. Props defined: ${!!props}`);
+        if (props) {
+            console.log(`  - modelUrl=${props.modelUrl}, fightPhase=${props.fightPhase}, specialUrl=${props.specialImageUrlProp}`); // Log new prop
+        }
+
         // Destructure props inside the function body
         const {
             modelUrl,
@@ -121,6 +257,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             onCharacterReady,
             currentHealth,
             isPaused,
+            specialImageUrlProp, // <-- Destructure prop
+            onLaunchProjectile, // <-- Destructure prop
+            playerIndex // <-- Destructure prop
         } = props;
 
         // --- Refs ---
@@ -129,12 +268,14 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const mainGroupRefCallback = useCallback((node: THREE.Group | null) => {
             groupRef.current = node;
         }, []);
+        const projectileMeshRef = useRef<THREE.Mesh>(null); // <-- Add ref for the projectile mesh
 
         // Action/State Refs
         const isAttackingRef = useRef(false);
         const canDamageRef = useRef(false);
         const isBlockingRef = useRef(false);
         const isDuckingRef = useRef(false);
+        const isSpecialAttackRef = useRef(false); // <-- Add ref for special attack
         const manualVelocityRef = useRef({ x: 0, y: 0, z: 0 });
         const positionRef = useRef(new THREE.Vector3(...initialPosition));
         const skeletonRef = useRef<THREE.Skeleton | null>(null);
@@ -154,6 +295,23 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const winnerRotationTarget = useRef<number | null>(null);
         const winnerRotationComplete = useRef(false);
         const victoryAnimPlayed = useRef(false); // To ensure anim plays only once
+
+        // --- ADD Projectile State ---
+        // const [specialImageUrl, setSpecialImageUrl] = useState<string | null>(null); // <-- Remove state
+        const [specialImageTexture, setSpecialImageTexture] = useState<Texture | null>(null);
+        const [specialPowerActive, setSpecialPowerActive] = useState(false);
+        const [specialPowerStatus, setSpecialPowerStatus] = useState<SpecialPowerStatus>('idle');
+        const [specialPowerPosition, setSpecialPowerPosition] = useState<[number, number, number]>([0, 1, 0.5]); // Initial placeholder
+        const [specialPowerScale, setSpecialPowerScale] = useState<[number, number, number]>([1, 1, 1]); // Initial placeholder
+        const [projectileIsFlipped, setProjectileIsFlipped] = useState(initialFacing === 'left'); // Initial flip based on prop
+
+        // --- Load Special Image Texture (Conditionally using prop) ---
+        const loadedTexture = specialImageUrlProp ? useTexture(specialImageUrlProp) : null;
+        useEffect(() => {
+            // Update state only if loadedTexture changes (becomes non-null or null again)
+            setSpecialImageTexture(loadedTexture);
+            console.log(`[PlayerCharacter ${initialFacing}] Special Image Texture Updated: ${loadedTexture ? 'Loaded' : 'Null/Loading'}`);
+        }, [loadedTexture, initialFacing]);
 
         // --- Effect to synchronize positionRef with prop ---
         useEffect(() => {
@@ -182,12 +340,39 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             getHasHitGround: () => hasHitGround.current,
             isAttacking: () => isAttackingRef.current,
             isDucking: () => isDuckingRef.current,
-            confirmHit: () => { 
-                canDamageRef.current = false; 
+            isPerformingSpecialAttack: () => isSpecialAttackRef.current, // <-- Add function to handle
+            confirmHit: () => {
+                canDamageRef.current = false;
             },
             getCanDamage: () => canDamageRef.current,
-            isBlocking: () => isBlockingRef.current
-        }), [isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef]);
+            isBlocking: () => isBlockingRef.current,
+            // --- Implement Projectile Methods ---
+            getProjectileState: () => {
+                if (specialPowerActive && projectileMeshRef.current) {
+                    // Ensure world matrix is up-to-date before getting world position
+                    projectileMeshRef.current.updateWorldMatrix(true, false);
+                    const worldPosition = new THREE.Vector3();
+                    projectileMeshRef.current.getWorldPosition(worldPosition);
+                    return { active: true, position: worldPosition };
+                } else {
+                    return { active: false, position: null };
+                }
+            },
+            deactivateProjectile: () => {
+                console.log(`[PlayerCharacter ${initialFacing}] Deactivating projectile externally.`);
+                setSpecialPowerActive(false);
+                setSpecialPowerStatus('idle');
+                // Clear userData timers if they exist
+                if (projectileMeshRef.current) {
+                    projectileMeshRef.current.userData.startTime = null;
+                    projectileMeshRef.current.userData.throwStartTime = null;
+                }
+            }
+        }), [
+            // Add state setters used by deactivateProjectile
+            isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef, isSpecialAttackRef, 
+            setSpecialPowerActive, setSpecialPowerStatus 
+        ]);
 
         // --- State ---
         const [pressedKeys, setPressedKeys] = useState<InputState>({
@@ -197,17 +382,19 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             duck: false,
             block: false,
             jump: false,
+            special: false, // <-- Add field
         });
         const [isLoaded, setIsLoaded] = useState(false);
         const [initialPose, setInitialPose] = useState<Record<string, InitialPoseData>>({});
 
         // --- Load Model & Capture Skeleton/Pose ---
         const { scene } = useGLTF(modelUrl);
+        // Revert to single useEffect for scene processing
         useEffect(() => {
-            if (scene && !skeletonRef.current) { 
+            if (scene && !skeletonRef.current) {
                 let foundSkeleton: THREE.Skeleton | null = null;
                 const pose: Record<string, InitialPoseData> = {};
-                scene.traverse((child) => {
+                scene.traverse((child) => { // Remove explicit :any
                     if (child instanceof THREE.SkinnedMesh && !foundSkeleton) {
                         if (child.skeleton) {
                              foundSkeleton = child.skeleton;
@@ -217,8 +404,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
                 if (foundSkeleton) {
                     skeletonRef.current = foundSkeleton;
-                    // @ts-ignore 
-                    foundSkeleton.bones.forEach((bone: THREE.Bone) => {
+                    // Assert type before accessing bones
+                    const assertedSkeleton = foundSkeleton as THREE.Skeleton;
+                    assertedSkeleton.bones.forEach((bone: THREE.Bone) => {
                         const boneName: string = bone.name;
                         pose[boneName] = {
                             pos: bone.position.clone(),
@@ -231,8 +419,9 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                     console.warn("Could not find skeleton in the model.");
                 }
                 setIsLoaded(true);
-            } 
-        }, [scene]);
+            }
+            // Removed the separate skeleton/pose useEffect
+        }, [scene]); // Depend only on scene for skeleton/pose capture
 
         // Define key handlers outside useEffect so they can be referenced in cleanup
         const handleKeyDown = useCallback((event: KeyboardEvent) => {
@@ -240,22 +429,32 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: true })); break;
                  case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: true })); break;
                  case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: true })); break;
-                 case ' ': setPressedKeys(prev => ({ ...prev, punch: true })); break;
+                 case ' ':
+                     if (event.shiftKey) {
+                         console.log(`[PlayerCharacter ${initialFacing} KeyDown] Shift + Space detected! Setting special: true`); // Log special input
+                         setPressedKeys(prev => ({ ...prev, special: true }));
+                     } else {
+                         setPressedKeys(prev => ({ ...prev, punch: true }));
+                     }
+                     break;
                  case 'b': setPressedKeys(prev => ({ ...prev, block: true })); break;
                  case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: true })); break;
              }
-        }, []);
+        }, [initialFacing]); // Added initialFacing dependency for logging
 
         const handleKeyUp = useCallback((event: KeyboardEvent) => {
               switch (event.key) {
                  case 'ArrowLeft': setPressedKeys(prev => ({ ...prev, left: false })); break;
                  case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: false })); break;
                  case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: false })); break;
-                 case ' ': setPressedKeys(prev => ({ ...prev, punch: false })); break;
+                 case ' ':
+                    console.log(`[PlayerCharacter ${initialFacing} KeyUp] Space released. Setting special: false, punch: false`); // Log key up
+                    setPressedKeys(prev => ({ ...prev, punch: false, special: false }));
+                    break;
                  case 'b': setPressedKeys(prev => ({ ...prev, block: false })); break;
                  case 'ArrowUp': setPressedKeys(prev => ({ ...prev, jump: false })); break;
              }
-        }, []);
+        }, [initialFacing]); // Added initialFacing dependency for logging
 
         // --- Input Handling (Conditionally Active) ---
         useEffect(() => {
@@ -263,7 +462,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  window.removeEventListener('keydown', handleKeyDown);
                  window.removeEventListener('keyup', handleKeyUp);
                  // Clear pressed keys when input is disabled or paused
-                 setPressedKeys({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
+                 setPressedKeys({ left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false }); // <-- Add field
                  return;
             }
 
@@ -278,7 +477,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         // --- Helper to get the current effective input state ---
         const getEffectiveInputState = useCallback((): InputState => {
-            const emptyState = { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+            const emptyState = { left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false }; // <-- Add field
             // Return empty state if paused or fight hasn't started
             if (isPaused || !canFight) {
                 return emptyState;
@@ -573,6 +772,99 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
         }, [actions, mixer, initialPose, initialFacing]);
 
+        // --- NEW: triggerSpecialPowerThrow Function ---
+        const triggerSpecialPowerThrow = useCallback(() => {
+           console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] ==> Attempting triggerSpecialPowerThrow`);
+            const currentSkeleton = skeletonRef.current;
+            const wrapper = modelWrapperRef.current; // Get wrapper ref
+            // Check prerequisites including the new prop
+            if (!mixer || !currentSkeleton || !initialPose || !wrapper || isActionInProgress.current || isBlockingRef.current || !specialImageUrlProp || !onLaunchProjectile) {
+                console.warn(`[PlayerCharacter ${initialFacing} ${playerIndex}] triggerSpecialPowerThrow: Prerequisites missing or action blocked.`, {
+                    mixer: !!mixer, skeleton: !!currentSkeleton, initialPose: !!initialPose, wrapper: !!wrapper,
+                    actionInProgress: isActionInProgress.current, blocking: isBlockingRef.current, /*status: removed*/ hasImage: !!specialImageUrlProp, hasCallback: !!onLaunchProjectile
+                });
+                 return;
+            }
+
+            console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] Triggering Special Power Throw Animation & Launch Signal...`);
+            isActionInProgress.current = true;
+            isAttackingRef.current = true; // Keep?
+            isSpecialAttackRef.current = true;
+
+          
+            // --- Play Animation (KEEP) ---
+            const currentPose: StartPose = {};
+            currentSkeleton.bones.forEach(bone => { currentPose[bone.name] = { quat: bone.quaternion.clone() }; });
+            const dynamicSpecialClip = createSpecialPowerThrowClip(currentSkeleton, initialPose, currentPose, 'SpecialPowerThrow_Dynamic');
+            if (!dynamicSpecialClip) {
+                console.error(`[PlayerCharacter ${initialFacing}] triggerSpecialPowerThrow: Failed to create dynamic special clip.`);
+                isActionInProgress.current = false; isAttackingRef.current = false; isSpecialAttackRef.current = false;
+                setSpecialPowerActive(false); setSpecialPowerStatus('idle'); // Reset local state on failure
+                return;
+            }
+            const specialAction = mixer.clipAction(dynamicSpecialClip);
+            specialAction.setLoop(THREE.LoopOnce, 1);
+            specialAction.clampWhenFinished = false;
+            actions?.IdleBreath?.fadeOut(0.1);
+            actions?.WalkCycle?.fadeOut(0.1);
+            actions?.BlockPose?.fadeOut(0.1);
+            actions?.DuckPose?.fadeOut(0.1);
+            actions?.DuckKick?.fadeOut(0.1);
+            specialAction.reset().fadeIn(0.1).play();
+            console.log(`[PlayerCharacter ${initialFacing}] Playing dynamic Special Power Throw action.`);
+
+            // --- Calculate World Launch Data ---
+            const lHand = currentSkeleton.bones.find(b => b.name === 'L_Hand');
+            const rHand = currentSkeleton.bones.find(b => b.name === 'R_Hand');
+            let launchPosWorld: THREE.Vector3 | null = null;
+
+            if (lHand && rHand) {
+                 lHand.updateWorldMatrix(true, false);
+                 rHand.updateWorldMatrix(true, false);
+                 const worldPosL = lHand.getWorldPosition(new THREE.Vector3());
+                 const worldPosR = rHand.getWorldPosition(new THREE.Vector3());
+                 launchPosWorld = worldPosL.lerp(worldPosR, 0.5);
+                 // Optional: Add slight forward offset in world space based on facing
+                 const forwardOffsetWorldX = (wrapper.rotation.y === 0 ? 1 : -1) * 0.4; // <-- Increased offset
+                 launchPosWorld.x += forwardOffsetWorldX;
+                 console.log(`[PlayerCharacter ${initialFacing}] Calculated launch pos between hands (World):`, launchPosWorld);
+            } else {
+                 const spineBone = currentSkeleton.bones.find(b => b.name === 'Spine02');
+                 if (spineBone && groupRef.current) {
+                     spineBone.updateWorldMatrix(true, false);
+                     launchPosWorld = spineBone.getWorldPosition(new THREE.Vector3());
+                     const forwardOffsetWorldX = (wrapper.rotation.y === 0 ? 1 : -1) * 0.4; // <-- Increased offset
+                     launchPosWorld.x = groupRef.current.position.x + forwardOffsetWorldX; // Base X on group position
+                     console.log(`[PlayerCharacter ${initialFacing}] Hands not found. Using Spine world Y/Z + Group X for launch:`, launchPosWorld);
+                 } else {
+                     console.warn(`[PlayerCharacter ${initialFacing}] Cannot find hands or spine. Using group position fallback.`);
+                     launchPosWorld = groupRef.current?.position.clone() || new THREE.Vector3(...initialPosition);
+                     launchPosWorld.y = 1.0; // Adjust Y
+                 }
+            }
+
+            // Determine World Direction X
+            const directionX = wrapper.rotation.y === 0 ? 1 : -1;
+            console.log(`[PlayerCharacter ${initialFacing}] Launch Direction X: ${directionX}`);
+
+            // --- Call Launch Callback --- << NEW
+            if (launchPosWorld) {
+                 console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] Calling onLaunchProjectile...`);
+                 onLaunchProjectile(launchPosWorld, directionX, specialImageUrlProp, playerIndex); // <-- Pass playerIndex
+            } else {
+                 console.error(`[PlayerCharacter ${initialFacing} ${playerIndex}] Could not determine launch position! Projectile callback not called.`);
+                 // Reset flags if launch calculation fails, even if animation plays
+                 // Note: isActionInProgress will be reset by the animation finish listener
+                 // isActionInProgress.current = false; // Don't reset here, let anim finish listener do it
+                 isAttackingRef.current = false;
+                 isSpecialAttackRef.current = false;
+                 setSpecialPowerActive(false); setSpecialPowerStatus('idle'); // Reset local state
+            }
+
+       }, [ // Add onLaunchProjectile to dependencies
+           actions, mixer, initialPose, initialFacing, specialImageUrlProp, onLaunchProjectile, modelWrapperRef, groupRef // Added groupRef dependency
+       ]);
+
         // --- END MOVED DEFINITIONS ---
 
 
@@ -636,9 +928,29 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                      idleAction?.reset().fadeIn(0.2).play();
                       isInStance.current = true;
                  }
-            };
-            mixer.addEventListener('finished', listener);
-            return () => mixer.removeEventListener('finished', listener);
+
+               // --- DEBUG LOG: Log ALL finished animations --- 
+              console.log(`[PlayerCharacter ${initialFacing} Anim Finished Listener] Event for clip: "${finishedClipName}" (Action Name: ${finishedActionName || 'Dynamic'})`);
+
+               // Handle finish for the dynamic special power throw animation
+              if (finishedClipName === 'SpecialPowerThrow_Dynamic') {
+                    console.log(`[PlayerCharacter ${initialFacing} Anim Finished Listener] Special Power Throw animation finished.`);
+                   isActionInProgress.current = false;
+                    isAttackingRef.current = false;
+                    canDamageRef.current = false;
+                    isSpecialAttackRef.current = false;
+                    isInStance.current = false;
+                    isMovingHorizontally.current = false;
+                    victoryAnimPlayed.current = false;
+                    winnerRotationComplete.current = false;
+                    winnerRotationTarget.current = null;
+                    currentIntroLoopAction.current = null;
+                    mixer.uncacheAction(e.action.getClip(), e.action.getRoot()); // Pass the clip, not the action
+                    mixer.uncacheClip(e.action.getClip());
+                }
+             };
+             mixer.addEventListener('finished', listener);
+             return () => mixer.removeEventListener('finished', listener);
         }, [mixer, actions, canFight, initialFacing]);
 
 
@@ -878,28 +1190,47 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 return;
             }
 
-            // ... (Keep the internal logic exactly as it was for duck, block, punch, kick triggers) ...
             const currentInput = getEffectiveInputState();
             const shouldBeBlocking = currentInput.block;
             const shouldBeDucking = currentInput.duck;
 
-            if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) triggerBlock();
-            else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) stopBlock();
-            else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) triggerDuck();
-            else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) triggerStandUp();
-            else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) {
-                if (isDuckingRef.current && actions.DuckKick) triggerKick();
-                else if (!isDuckingRef.current) triggerPunch();
+            // Log state before checks
+            console.log(`[PlayerCharacter ${initialFacing} Action Trigger] Input:`, currentInput, `ActionInProgress: ${isActionInProgress.current}, ShouldBlock: ${shouldBeBlocking}`);
+
+            // Priority: Special > Block/Duck > Punch/Kick > Stand/Idle
+            if (currentInput.special && !isActionInProgress.current && !shouldBeBlocking) {
+                console.log(`[PlayerCharacter ${initialFacing} Action Trigger] Conditions MET for Special Power Throw.`); // Log trigger
+                triggerSpecialPowerThrow();
+            } else if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
+                triggerBlock();
+            } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
+                stopBlock();
+            } else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
+                triggerDuck();
+            } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
+                triggerStandUp();
+            } else if (currentInput.punch && !isActionInProgress.current && !shouldBeBlocking) { // Only punch if not blocking
+                if (isDuckingRef.current && actions?.DuckKick) { // Check DuckKick action exists
+                    triggerKick();
+                } else if (!isDuckingRef.current) {
+                    triggerPunch();
+                }
             }
 
         }, [actions, isInStance, isActionInProgress, getEffectiveInputState, canFight, fightPhase, // Add fightPhase dependency
-            triggerBlock, stopBlock, triggerDuck, triggerStandUp, triggerKick, triggerPunch]); // Add helpers to dependencies
+            triggerBlock, stopBlock, triggerDuck, triggerStandUp, triggerKick, triggerPunch, triggerSpecialPowerThrow]); // Add helpers to dependencies
 
 
         // --- Frame Update ---
         useFrame((state, delta) => {
+            // --- ADD THIS LOG ---
+            if (isActionInProgress.current && isSpecialAttackRef.current) {
+                 console.log(`[PlayerCharacter ${initialFacing} useFrame] Special attack animation playing. NO local projectile updates should happen here.`);
+            }
+            // --- END ADDED LOG ---
+ 
             if (isPaused) return;
-
+ 
             delta = Math.min(delta, 0.05);
             const group = groupRef.current;
             const modelWrapper = modelWrapperRef.current;
@@ -1027,6 +1358,107 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             }
             group.position.copy(currentPos);
 
+            // --- Update Projectile State (Movement, Scale, Transitions) ---
+            if (specialPowerActive && specialImageTexture) {
+                const projectileMesh = projectileMeshRef.current; // Use the ref
+                if (projectileMesh) { // Check if mesh exists via ref
+                    const now = performance.now();
+                    const isFlipped = projectileIsFlipped;
+
+                    switch (specialPowerStatus) {
+                        case 'growing': {
+                            const activationTime = (projectileMesh.userData.startTime as number | undefined) ?? now;
+                            if (!projectileMesh.userData.startTime) projectileMesh.userData.startTime = activationTime;
+
+                            const growingElapsedTime = now - activationTime;
+                            // Start growth only after delay
+                            const effectiveElapsedTime = Math.max(0, growingElapsedTime - GROWTH_START_DELAY_MS);
+                            const growthProgress = Math.min(effectiveElapsedTime / GROWTH_DURATION_MS, 1);
+
+                            // Interpolate scale
+                            const startScale = 0.01;
+                            const targetScale = BASE_PLANE_SIZE;
+                            const currentScale = THREE.MathUtils.lerp(startScale, targetScale, growthProgress);
+                            const aspect = specialImageTexture.image ? specialImageTexture.image.width / specialImageTexture.image.height : 1;
+                            projectileMesh.scale.set(currentScale * aspect, currentScale, 1);
+
+                            // Log growth values
+                            // console.log(`[${initialFacing} Growth] Elapsed: ${growingElapsedTime.toFixed(0)}, EffElapsed: ${effectiveElapsedTime.toFixed(0)}, Progress: ${growthProgress.toFixed(2)}, Scale: ${currentScale.toFixed(3)}`);
+
+                            // Update position between hands continuously
+                            // ... (position logic remains the same) ...
+                             const lHand = skeletonRef.current?.bones.find(b => b.name === 'L_Hand');
+                             const rHand = skeletonRef.current?.bones.find(b => b.name === 'R_Hand');
+                             if (lHand && rHand && group) { // Ensure group exists
+                                 const worldPosL = lHand.getWorldPosition(new THREE.Vector3());
+                                 const worldPosR = rHand.getWorldPosition(new THREE.Vector3());
+                                 const midPoint = worldPosL.lerp(worldPosR, 0.5);
+                                 const forwardOffset = isFlipped ? -0.1 : 0.1;
+                                 const localMidPoint = group.worldToLocal(midPoint.clone()); // Ensure group exists
+                                 projectileMesh.position.set(localMidPoint.x, localMidPoint.y, localMidPoint.z + forwardOffset);
+                                 // console.log(`[${initialFacing} Growth Pos] LocalMid: ${localMidPoint.x.toFixed(2)},${localMidPoint.y.toFixed(2)},${localMidPoint.z.toFixed(2)} -> Proj Pos: ${projectileMesh.position.x.toFixed(2)},${projectileMesh.position.y.toFixed(2)},${projectileMesh.position.z.toFixed(2)}`);
+                             } else {
+                                 projectileMesh.position.set(...specialPowerPosition);
+                             }
+
+                            // Check for transition to throwing (based on total time including delay)
+                            if (growingElapsedTime >= (GROWTH_START_DELAY_MS + GROWTH_DURATION_MS)) {
+                                console.log(`[PlayerCharacter ${initialFacing} Projectile] Growth finished. Transitioning to throwing.`);
+                                setSpecialPowerStatus('throwing');
+                                projectileMesh.userData.throwStartTime = now;
+                            }
+                            break;
+                        }
+
+                        case 'throwing': {
+                            const throwStartTime = (projectileMesh.userData.throwStartTime as number | undefined) ?? now;
+                             if (!projectileMesh.userData.throwStartTime) projectileMesh.userData.throwStartTime = throwStartTime;
+                             // Store initial X position if not already stored
+                             if (projectileMesh.userData.initialX === undefined || projectileMesh.userData.initialX === null) {
+                                 projectileMesh.userData.initialX = projectileMesh.position.x;
+                             }
+ 
+                            const throwingElapsedTime = now - throwStartTime;
+                            const throwProgress = Math.min(throwingElapsedTime / THROW_DURATION_MS, 1);
+
+                            // Movement Logic
+                            const throwVelocity = 15; // Adjust speed as needed
+                            // Determine direction based on current facing (updated by isFlipped state)
+                            const direction = isFlipped ? -1 : 1; // If flipped (facing left), move in negative X; otherwise positive X
+                            projectileMesh.position.x += throwVelocity * direction * delta; // Move along the projectile's local X axis
+
+                            // Log throwing values
+                            // console.log(`[${initialFacing} Throw] Elapsed: ${throwingElapsedTime.toFixed(0)}, Progress: ${throwProgress.toFixed(2)}, X Pos: ${projectileMesh.position.x.toFixed(3)}, Direction: ${direction}`);
+
+                            // Deactivation Logic
+                            // Calculate distance based on local X movement relative to initial X
+                            const initialX = projectileMesh.userData.initialX ?? 0; // Use initial X stored in userData
+                            const currentDistance = Math.abs(projectileMesh.position.x - initialX);
+                            if (throwingElapsedTime >= THROW_DURATION_MS || currentDistance > MAX_THROW_DISTANCE) {
+                                console.log(`[PlayerCharacter ${initialFacing} Projectile] Despawning - Time: ${throwingElapsedTime >= THROW_DURATION_MS}, Dist: ${currentDistance > MAX_THROW_DISTANCE}`);
+                                setSpecialPowerActive(false);
+                                setSpecialPowerStatus('idle');
+                                isActionInProgress.current = false; // Release action lock
+                                projectileMesh.userData.startTime = null;
+                                projectileMesh.userData.throwStartTime = null;
+                                projectileMesh.userData.initialX = null; // Clear initial X
+                            }
+                            break;
+                        }
+                    }
+
+                    // Look At Camera
+                    const cameraPosition = state.camera.position;
+                     // Get the projectile's world position for accurate lookAt
+                     const projectileWorldPos = projectileMesh.getWorldPosition(new THREE.Vector3());
+                    projectileMesh.lookAt(cameraPosition.x, projectileWorldPos.y, cameraPosition.z);
+                }
+            } else if (!specialPowerActive && projectileMeshRef.current) {
+                 // Clean up userData if projectile becomes inactive and mesh still exists
+                 projectileMeshRef.current.userData.startTime = null;
+                 projectileMeshRef.current.userData.throwStartTime = null;
+            }
+
             // Animation Control (Walk/Idle Trigger - Only during FIGHT)
             const isCurrentlyMovingHorizontallyOnGround = isGrounded && targetVelocityX !== 0;
             if (!isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
@@ -1063,6 +1495,17 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                     <cylinderGeometry args={[DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_RADIUS, DEBUG_CYLINDER_HEIGHT, 16]} />
                     <meshStandardMaterial color={isPlayerControlled ? "blue" : "red"} wireframe transparent opacity={0.5} />
                 </mesh>
+
+                {/* --- Render Special Power Projectile --- */}
+                <SpecialPowerProjectile
+                    ref={projectileMeshRef} // <-- Pass the ref
+                    active={specialPowerActive}
+                    status={specialPowerStatus}
+                    initialPosition={specialPowerPosition}
+                    initialScale={specialPowerScale}
+                    texture={specialImageTexture} // Pass loaded texture
+                    isFlipped={projectileIsFlipped}
+                />
             </group>
         );
     }

@@ -3,6 +3,7 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 // Removed Environment, no OrbitControls needed
 import * as THREE from 'three';
+import { useTexture } from '@react-three/drei'; // <-- Add useTexture import
 // Import from @react-three/cannon
 // Uncomment PlayerCharacter
 // Ensure PlayerCharacterHandle is imported correctly and not defined locally
@@ -35,7 +36,7 @@ const INTRO_CAMERA_SMOOTH_TIME = 0.4; // Approx time for damping transition
 const BASE_DISTANCE_FACTOR = 0.3;
 const INITIAL_FOV = 50; // Keep FOV constant here for now
 const MAX_HEALTH = 1000; // Define max health
-const PUNCH_DAMAGE = 100; // Damage per hit
+const PUNCH_DAMAGE = 20; // Damage per hit
 const BLOCK_DAMAGE_MULTIPLIER = 0.1; // 10% damage when blocking
 const HIT_DISTANCE = CHARACTER_RADIUS * 2 + 0.3; // Distance threshold for a hit (cylinders touching + small buffer)
 const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position check
@@ -43,8 +44,10 @@ const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position che
 const FLOOR_TEXTURE_REPEAT = 8; 
 const VERTICAL_COLLISION_THRESHOLD = 0.5; // Allow jumping over if Y difference > this
 
-// Add FightPhase type/enum (moved to PlayerCharacter.tsx)
-// type FightPhase = 'LOADING' | 'INTRO_START' | 'INTRO_P1' | 'INTRO_P2' | 'PRE_FIGHT' | 'READY' | 'FIGHT' | 'GAME_OVER';
+// --- ADD Projectile Constants ---
+const INITIAL_PROJECTILE_SCALE = 0.01;
+const BASE_PLANE_SIZE = 0.35; // <-- Reduced Size // Base size of the projectile plane
+const GROWTH_DURATION_MS = 500; // Duration for projectile growth (in ms)
 
 // Define available intro animation types (matching clip names or identifiers)
 const INTRO_ANIMATION_TYPES = ['Hello', 'ArmsCrossed', 'Bow']; // Example types
@@ -69,14 +72,13 @@ const playSound = (url: string | null, volume: number = 1.0) => {
     }
 };
 
-// REMOVED Local definition of PlayerCharacterHandle
-// export interface PlayerCharacterHandle {
-//     getMainGroup: () => THREE.Group | null;
-//     getModelWrapper: () => THREE.Group | null;
-//     setPositionX: (x: number) => void;
-//     resetVelocityX: () => void;
-//     getHasHitGround: () => boolean;
-// }
+// Define the callback prop type for launching projectiles
+type LaunchProjectileCallback = (
+    startPosition: THREE.Vector3,
+    directionX: number, // 1 for right, -1 for left
+    textureUrl: string | null,
+    launcherIndex: 1 | 2 // <-- Add launcher index
+) => void;
 
 interface BattleSceneProps {
     player1Id: string; // <-- Add player 1 ID prop
@@ -86,44 +88,12 @@ interface BattleSceneProps {
     player2Name: string;
     player1NameAudioUrl: string | null; // Add P1 audio URL
     player2NameAudioUrl: string | null; // Add P2 audio URL
+    player1SpecialImageUrl: string | null; // <-- Add P1 special image URL prop
+    player2SpecialImageUrl: string | null; // <-- Add P2 special image URL prop
     backgroundImageUrl: string;
     floorTextureUrl: string;
     onSceneVisible: () => void; // Add callback prop
 }
-
-// Remove the physics-based GroundPlane component definition
-/*
-function GroundPlane(props: any) {
-    const [ref] = usePlane(() => ({ 
-        rotation: [-Math.PI / 2, 0, 0],
-        material: { friction: 0.1 },
-        ...props 
-    }));
-    return (
-        <mesh ref={ref} receiveShadow> 
-            <planeGeometry args={[50, 50]} />
-            <meshStandardMaterial color="grey" /> 
-        </mesh>
-    );
-}
-*/
-
-// Comment out TestCube
-/*
-function TestCube(props: any) {
-  const [ref, api] = useBox(() => ({ mass: 1, position: [0, 3, 0], ...props }));
-
-  // Optional interaction example
-  // useFrame(() => api.applyLocalForce([0, 0, -10], [0, 0, 0]));
-
-  return (
-    <mesh ref={ref} castShadow>
-      <boxGeometry args={[1, 1, 1]} />
-      <meshStandardMaterial color="blue" />
-    </mesh>
-  );
-}
-*/
 
 // --- Create a simple context for Battle State ---
 interface BattleStateContextProps {
@@ -134,7 +104,7 @@ interface BattleStateContextProps {
 }
 const BattleStateContext = React.createContext<BattleStateContextProps | undefined>(undefined);
 
-// --- MOVE useBattleState OUTSIDE the main component --- 
+// --- MOVE useBattleState OUTSIDE the main component ---
 function useBattleState() {
     const context = React.useContext(BattleStateContext);
     if (!context) {
@@ -143,10 +113,65 @@ function useBattleState() {
     return context;
 }
 
+// -------- Special Power Projectile Component Definition (within BattleScene.tsx) --------
+interface SpecialPowerProjectileProps {
+  position: THREE.Vector3;
+  textureUrl: string | null;
+  isFlipped: boolean; // Determine flip based on launch direction
+  scale: THREE.Vector3; // Add scale prop
+}
+
+const SpecialPowerProjectileComponent: React.FC<SpecialPowerProjectileProps> = memo(function SpecialPowerProjectileComponentProps({
+  position,
+  textureUrl,
+  isFlipped,
+  scale, // Receive scale prop
+}: SpecialPowerProjectileProps) {
+  const meshRef = useRef<THREE.Mesh>(null);
+  const loadedTexture = useTexture(textureUrl || '');
+
+  useEffect(() => {
+    if (loadedTexture && meshRef.current) {
+      loadedTexture.wrapS = THREE.RepeatWrapping;
+      loadedTexture.repeat.x = isFlipped ? -1 : 1;
+      loadedTexture.offset.x = isFlipped ? 1 : 0;
+      loadedTexture.needsUpdate = true;
+      const material = meshRef.current.material as THREE.MeshBasicMaterial;
+      if (material && material.needsUpdate !== undefined) {
+          material.needsUpdate = true;
+      }
+    }
+  }, [loadedTexture, isFlipped]);
+
+  // Only render if the URL was provided and the texture has loaded
+  if (!textureUrl || !loadedTexture) {
+    return null;
+  }
+
+  // Calculate aspect ratio based on the loaded texture
+  const aspect = loadedTexture.image ? loadedTexture.image.width / loadedTexture.image.height : 1;
+
+  return (
+    <mesh ref={meshRef} position={position} scale={scale}>
+      {/* Geometry args define the base shape (1x1 plane), scale prop handles final size */}
+      <planeGeometry args={[aspect, 1]} /> {/* Use aspect ratio in geometry */}
+      <meshBasicMaterial
+        map={loadedTexture}
+        transparent
+        side={THREE.DoubleSide}
+        depthWrite={false}
+      />
+    </mesh>
+  );
+});
+// -------- End Special Power Projectile Component Definition --------
+
 // --- Props for SceneContent (Internal Component) ---
 interface SceneContentProps {
     player1ModelUrl: string;
     player2ModelUrl: string;
+    player1SpecialImageUrl: string | null;
+    player2SpecialImageUrl: string | null;
     isAIActive: boolean;
     backgroundImageUrl: string;
     floorTextureUrl: string;
@@ -156,13 +181,15 @@ interface SceneContentProps {
     p2IntroAnim: string | null;
     player1Health: number;
     player2Health: number;
-    isPaused: boolean; // <-- Destructure isPaused
+    isPaused: boolean;
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
-const SceneContent: React.FC<SceneContentProps> = memo(({
+const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
     player1ModelUrl,
     player2ModelUrl,
+    player1SpecialImageUrl,
+    player2SpecialImageUrl,
     isAIActive,
     backgroundImageUrl,
     floorTextureUrl,
@@ -172,11 +199,11 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     p2IntroAnim,
     player1Health,
     player2Health,
-    isPaused, // <-- Destructure isPaused
-}: SceneContentProps) => {
+    isPaused,
+}: SceneContentProps) {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
-    const aiInputRef = useRef<InputState>({ left: false, right: false, punch: false, duck: false, block: false, jump: false });
+    const aiInputRef = useRef<InputState>({ left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false });
     const controlsRef = useRef<any>(null);
     const { scene, camera } = useThree();
     const { setPlayer1Health, setPlayer2Health } = useBattleState();
@@ -192,27 +219,62 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     const [showFightText, setShowFightText] = useState(false);
     const [winnerName, setWinnerName] = useState<string | null>(null);
     const [showWinnerBanner, setShowWinnerBanner] = useState(false);
-    const [frozenCamState, setFrozenCamState] = useState<{ position: THREE.Vector3, target: THREE.Vector3 } | null>(null); // <-- State for frozen camera
+    const [frozenCamState, setFrozenCamState] = useState<{ position: THREE.Vector3, target: THREE.Vector3 } | null>(null);
+
+    // --- ADD State for the Active Projectile ---
+    interface ActiveProjectile {
+        id: number; // Simple ID for key prop
+        startX: number; // Store initial X for distance calculation
+        position: THREE.Vector3;
+        directionX: number;
+        textureUrl: string | null;
+        startTime: number;
+        status: 'growing' | 'throwing'; // Add status
+        scale: THREE.Vector3; // Add scale state
+        throwStartTime?: number; // Optional throw start time
+        launcherIndex: 1 | 2; // <-- Add launcher index
+    }
+    const [activeProjectile, setActiveProjectile] = useState<ActiveProjectile | null>(null);
+    const nextProjectileId = useRef(0);
+
+    // --- Update Launch Handler ---
+    const handleProjectileLaunch = useCallback((startPosition: THREE.Vector3, directionX: number, textureUrl: string | null, launcherIndex: 1 | 2) => {
+        console.log(`[SceneContent] Launching Projectile:`, { startPosition, directionX, textureUrl, launcherIndex });
+
+        // Create new projectile state
+        const newProjectile: ActiveProjectile = {
+             id: nextProjectileId.current++,
+             startX: startPosition.x, // Store starting X
+             position: startPosition.clone(),
+             directionX: directionX,
+             textureUrl: textureUrl,
+             startTime: performance.now(),
+             status: 'growing', // Start in growing state
+             scale: new THREE.Vector3(INITIAL_PROJECTILE_SCALE, INITIAL_PROJECTILE_SCALE, INITIAL_PROJECTILE_SCALE),
+             launcherIndex: launcherIndex, // <-- Store launcher index
+        };
+        // Log just before setting state
+        console.log(`[SceneContent] Setting new projectile state:`, newProjectile);
+        setActiveProjectile(newProjectile); // Set the new projectile as active
+
+    }, []);
 
     // --- Create materials for the side walls (AFTER texture state) ---
     const leftWallMaterial = useMemo(() => {
         if (!loadedBackgroundTexture) return null;
-
-        // Clone the texture to avoid modifying the original used by the main background
         const mirroredTexture = loadedBackgroundTexture.clone();
-        mirroredTexture.wrapS = THREE.MirroredRepeatWrapping; // Use mirrored wrapping horizontally
-        mirroredTexture.wrapT = THREE.RepeatWrapping;        // Repeat vertically
-        mirroredTexture.repeat.set(1, 1);  // Reset repeat
-        mirroredTexture.offset.set(1, 0);  // Start sampling from the right edge (U=1)
-        mirroredTexture.needsUpdate = true; // Important: Signal the texture needs update
-
+        mirroredTexture.wrapS = THREE.MirroredRepeatWrapping;
+        mirroredTexture.wrapT = THREE.RepeatWrapping;
+        mirroredTexture.repeat.set(1, 1);
+        mirroredTexture.offset.set(1, 0);
+        mirroredTexture.needsUpdate = true;
         return new THREE.MeshBasicMaterial({
             map: mirroredTexture,
             side: THREE.DoubleSide,
             transparent: false,
-            depthWrite: false, // Keep behind other objects
+            depthWrite: false,
         });
-    }, [loadedBackgroundTexture]); // Recompute only when the texture loads/changes
+    }, [loadedBackgroundTexture]);
 
     // --- Effect to signal readiness (Textures AND Characters) ---
     useEffect(() => {
@@ -246,7 +308,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
     useEffect(() => {
         console.log("[SceneContent] Manual floor texture loading useEffect RUNNING.");
         const loader = new THREE.TextureLoader();
-        setLoadedFloorTexture(null); // Reset on URL change
+        setLoadedFloorTexture(null);
         loader.load(
             floorTextureUrl,
             (texture) => { // onLoad
@@ -255,53 +317,45 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
                  texture.repeat.set(FLOOR_TEXTURE_REPEAT, FLOOR_TEXTURE_REPEAT);
                  texture.needsUpdate = true;
-                 setLoadedFloorTexture(texture); // Set state
+                 setLoadedFloorTexture(texture);
                  console.log("[SceneContent] Floor texture configured and state updated.");
             },
             undefined, // onProgress
             (error) => { console.error("[SceneContent] Error loading floor texture manually:", error); }
         );
-    }, [floorTextureUrl]); // Depend only on the URL
+    }, [floorTextureUrl]);
 
     // --- Effect to capture camera state on pause --- 
     useEffect(() => {
         if (isPaused) {
             const p1Group = player1Ref.current?.getMainGroup();
             const p2Group = player2Ref.current?.getMainGroup();
-            // Calculate the current target based on the *last known* midpoint
-            // This might need adjustment if pausing outside FIGHT phase
             let targetX = 0;
             if (p1Group && p2Group) {
                  targetX = (p1Group.position.x + p2Group.position.x) / 2;
-            } else if (p1Group) { // Fallback if only P1 exists (intro?)
+            } else if (p1Group) {
                 targetX = p1Group.position.x;
-            } else if (p2Group) { // Fallback if only P2 exists (intro?)
+            } else if (p2Group) {
                  targetX = p2Group.position.x;
-            } // Default to 0 if neither exists yet
-            
+            }
             const currentTarget = new THREE.Vector3(targetX, CAM_LOOKAT_Y, 0);
             const currentPosition = camera.position.clone();
             console.log("[SceneContent] Pausing. Freezing camera at:", { pos: currentPosition, target: currentTarget });
             setFrozenCamState({ position: currentPosition, target: currentTarget });
         } else {
             console.log("[SceneContent] Resuming. Clearing frozen camera state.");
-            setFrozenCamState(null); // Clear frozen state on resume
+            setFrozenCamState(null);
         }
-    // Add camera as dependency? It might cause loops. Let's try without first.
-    }, [isPaused, player1Ref, player2Ref]); 
+    }, [isPaused, player1Ref, player2Ref, camera]); // Added camera dependency
 
     useFrame((state, delta) => {
-        // <-- PAUSE CHECK: Explicitly set camera state if paused -->
         if (isPaused && frozenCamState) {
             camera.position.copy(frozenCamState.position);
             camera.lookAt(frozenCamState.target);
-            camera.updateProjectionMatrix(); // Ensure projection matrix is updated
-            return; // Stop further updates for this frame
+            camera.updateProjectionMatrix();
+            return;
         }
-        // If not paused, frozenCamState should be null, proceed normally.
 
-        // const { camera } = state; // Moved camera destructuring up // <-- REMOVE this duplicate destructuring
-        // Refs required for ANY logic below
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
 
@@ -310,34 +364,24 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
             const p2Wrapper = player2Ref.current!.getModelWrapper();
             if (!p1Wrapper || !p2Wrapper) return;
 
-            // --- Phase-Specific Character Logic ---
             if (fightPhase === 'PRE_FIGHT') {
-                // --- Set Initial Rotation during PRE_FIGHT --- 
                 if (player1Ref.current && p1Wrapper) {
-                    // console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P1 Rotation");
-                    p1Wrapper.rotation.y = 0; // P1 faces right
+                    p1Wrapper.rotation.y = 0;
                 }
                 if (player2Ref.current && p2Wrapper) {
-                    // console.log("[SceneContent useFrame PRE_FIGHT] Setting Initial P2 Rotation");
-                    p2Wrapper.rotation.y = Math.PI; // P2 faces left
+                    p2Wrapper.rotation.y = Math.PI;
                 }
             } else if (fightPhase === 'FIGHT') {
                 const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
-                if (!playersLanded) return; // Don't run fight logic/camera if players haven't landed
+                if (!playersLanded) return;
 
-                // --- Character Interaction Logic (Runs during FIGHT) ---
-                // Dynamic Facing
                 let angleP1 = Math.atan2(p2Group.position.x - p1Group.position.x, p2Group.position.z - p1Group.position.z);
                 let angleP2 = Math.atan2(p1Group.position.x - p2Group.position.x, p1Group.position.z - p2Group.position.z);
                 const targetP1Rotation = angleP1 - Math.PI / 2;
                 const targetP2Rotation = angleP2 - Math.PI / 2;
-
-                // Removed dynamicRotationHasRun ref check as facing is handled continuously
-
                 p1Wrapper.rotation.y = targetP1Rotation;
                 p2Wrapper.rotation.y = targetP2Rotation;
 
-                // Collision (Only during fight)
                 const distX = Math.abs(p1Group.position.x - p2Group.position.x);
                 const distY = Math.abs(p1Group.position.y - p2Group.position.y);
                 if (distX < MIN_SEPARATION && distY < VERTICAL_COLLISION_THRESHOLD) {
@@ -351,32 +395,141 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                     player2Ref.current!.setPositionX(THREE.MathUtils.clamp(correctedP2X, MIN_X, MAX_X));
                 }
 
-                // Hit Detection & Damage (Only during fight)
+                // --- Update Projectile Position & State ---
+                if (activeProjectile) {
+                    const now = performance.now();
+                    // It's generally better to update state via the setter function
+                    // We calculate the next state properties here and call setActiveProjectile once at the end.
+                    let newStatus = activeProjectile.status;
+                    let newScale = activeProjectile.scale.clone();
+                    let newPosition = activeProjectile.position.clone();
+                    let newThrowStartTime = activeProjectile.throwStartTime;
+
+                    let shouldDeactivate = false; // Flag for deactivation
+
+                    switch (activeProjectile.status) {
+                        case 'growing': {
+                            const growingElapsedTime = now - activeProjectile.startTime;
+                            const growthProgress = Math.min(growingElapsedTime / GROWTH_DURATION_MS, 1);
+                            const targetScaleValue = BASE_PLANE_SIZE;
+                            
+                            // Interpolate scale uniformly (aspect ratio handled by component geometry)
+                            const currentScaleValue = THREE.MathUtils.lerp(INITIAL_PROJECTILE_SCALE, targetScaleValue, growthProgress);
+                            newScale.set(currentScaleValue, currentScaleValue, currentScaleValue);
+
+                            // Position remains fixed at start during growth
+                            newPosition.copy(activeProjectile.position);
+
+                            if (growthProgress === 1) {
+                                console.log(`[SceneContent Projectile] Growth Complete for ID ${activeProjectile.id}. Transitioning to throwing.`);
+                                newStatus = 'throwing';
+                                newThrowStartTime = now; // Record the time throwing starts
+                            }
+                            break;
+                        }
+                        case 'throwing': {
+                            const projectileSpeed = 3; // Define speed (SLOWER)
+                            const MAX_TRAVEL_TIME_MS = 1500; // Define max travel time
+
+                            // Calculate next position for throwing
+                            newPosition.x += activeProjectile.directionX * projectileSpeed * delta;
+
+                            // Use throwStartTime if available, otherwise fall back to startTime
+                            const throwStartTime = activeProjectile.throwStartTime ?? activeProjectile.startTime;
+                            const elapsedTime = now - throwStartTime;
+
+                            if (elapsedTime > MAX_TRAVEL_TIME_MS) {
+                                console.log(`[SceneContent Projectile] Deactivating ID ${activeProjectile.id} (Time Limit)`);
+                                shouldDeactivate = true;
+                            }
+
+                            // --- Projectile Hit Detection --- << REVISED LOGIC
+                            // Determine opponent based on who LAUNCHED the projectile
+                            const opponentGroup = activeProjectile.launcherIndex === 1 ? p2Group : p1Group;
+                            const opponentRef = activeProjectile.launcherIndex === 1 ? player2Ref.current : player1Ref.current;
+                            const opponentPlayerIndex = activeProjectile.launcherIndex === 1 ? 2 : 1; // For logging
+
+                            const opponentHitRadius = CHARACTER_RADIUS; // Use character radius
+                            const projectileHitRadius = 0.3; // Keep projectile radius
+                            const verticalHitTolerance = 1.0; // Generous vertical tolerance
+
+                            // Calculate distances separately
+                            const distanceX = Math.abs(newPosition.x - opponentGroup.position.x);
+                            const distanceY = Math.abs(newPosition.y - opponentGroup.position.y);
+                            const combinedRadiusX = projectileHitRadius + opponentHitRadius;
+
+                            // --- Update Logging ---
+                            console.log(`[Projectile Hit Check - ID ${activeProjectile.id} by P${activeProjectile.launcherIndex}]
+  Projectile Pos: ${newPosition.x.toFixed(2)}, ${newPosition.y.toFixed(2)}
+  Opponent (P${opponentPlayerIndex}) Pos:   ${opponentGroup.position.x.toFixed(2)}, ${opponentGroup.position.y.toFixed(2)}
+  Distance X:      ${distanceX.toFixed(3)} (Threshold: ${combinedRadiusX.toFixed(3)})
+  Distance Y:      ${distanceY.toFixed(3)} (Tolerance: ${verticalHitTolerance.toFixed(3)})
+  X Met:           ${distanceX < combinedRadiusX}
+  Y Met:           ${distanceY < verticalHitTolerance}
+  Condition Met:   ${distanceX < combinedRadiusX && distanceY < verticalHitTolerance}`);
+                            // --- END LOGGING ---
+
+                            // Check BOTH horizontal and vertical proximity
+                            if (distanceX < combinedRadiusX && distanceY < verticalHitTolerance) {
+                                console.log(`[SceneContent Projectile] HIT DETECTED (X/Y): P${activeProjectile.launcherIndex}'s Projectile (ID ${activeProjectile.id}) vs P${opponentPlayerIndex}`);
+                                const opponentBlocking = opponentRef?.isBlocking() ?? false;
+                                const damage = opponentBlocking ? 100 * 0.2 : 100; // Apply special damage amounts
+
+                                if (opponentPlayerIndex === 2) { // Hit Player 2
+                                    setPlayer2Health(h => Math.max(0, h - damage));
+                                } else { // Hit Player 1
+                                    setPlayer1Health(h => Math.max(0, h - damage));
+                                }
+                                playSoundEffect('/sounds/effects/special_hit.mp3');
+                                shouldDeactivate = true; // Deactivate on hit
+                            }
+                            break; // End throwing case
+                        }
+                    } // End switch
+
+                    // Update the main state only once at the end of the frame logic
+                    if (shouldDeactivate) {
+                        setActiveProjectile(null); // Deactivate
+                    } else {
+                        setActiveProjectile({
+                            ...activeProjectile,
+                            status: newStatus,
+                            scale: newScale,
+                            position: newPosition,
+                            throwStartTime: newThrowStartTime,
+                        });
+                    }
+                } // End if(activeProjectile)
+
+                // --- Standard Hit Detection & Damage --- (Keep existing)
                 const p1 = player1Ref.current;
                 const p2 = player2Ref.current;
                 if (p1 && p2) {
-                    const p1Attacking = p1.isAttacking();
-                    const p2Attacking = p2.isAttacking();
-                    const p1Blocking = p1.isBlocking();
-                    const p2Blocking = p2.isBlocking();
-                    if (p1Attacking && distX < HIT_DISTANCE && p1.getCanDamage()) {
+                    const p1GroupPos = p1Group.position;
+                    const p2GroupPos = p2Group.position;
+                    const distXHit = Math.abs(p1GroupPos.x - p2GroupPos.x);
+                    const p1Blocking = p1?.isBlocking() ?? false;
+                    const p2Blocking = p2?.isBlocking() ?? false;
+                    const playersLandedHit = (p1?.getHasHitGround() ?? false) && (p2?.getHasHitGround() ?? false);
+                    const p1AttackingPunchKick = (p1?.isAttacking() ?? false) && !(p1?.isPerformingSpecialAttack() ?? true);
+                    const p2AttackingPunchKick = (p2?.isAttacking() ?? false) && !(p2?.isPerformingSpecialAttack() ?? true);
+                    const p1CanDamage = p1?.getCanDamage() ?? false;
+                    const p2CanDamage = p2?.getCanDamage() ?? false;
+
+                    if (p1AttackingPunchKick && distXHit < HIT_DISTANCE && p1CanDamage && playersLandedHit) {
                         const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                        console.log(`HIT: P1 -> P2 ${p2Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
                         p1.confirmHit();
                         setPlayer2Health(h => Math.max(0, h - damage));
                     }
-                    if (p2Attacking && distX < HIT_DISTANCE && p2.getCanDamage()) {
+                    if (p2AttackingPunchKick && distXHit < HIT_DISTANCE && p2CanDamage && playersLandedHit) {
                         const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                        console.log(`HIT: P2 -> P1 ${p1Blocking ? '(Blocked)' : ''} | Damage: ${damage}`);
                         p2.confirmHit();
                         setPlayer1Health(h => Math.max(0, h - damage));
                     }
                 }
             }
 
-            // --- Dynamic Camera Logic (Runs AFTER phase-specific logic, if camera exists) ---
             if (camera) {
-                // Intro phase camera logic
                 if (fightPhase === 'INTRO_P1' || fightPhase === 'INTRO_P2') {
                     const introLookAtY = 0.9;
                     const introCamDistance = 1.4;
@@ -384,27 +537,23 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                     const focusGroup = fightPhase === 'INTRO_P1' ? p1Group : p2Group;
                     const targetFocusPos = new THREE.Vector3(focusGroup.position.x, introLookAtY, focusGroup.position.z);
                     const targetCamPosIntro = new THREE.Vector3(focusGroup.position.x, introCamYOffset, focusGroup.position.z + introCamDistance);
-
                     camera.position.x = THREE.MathUtils.damp(camera.position.x, targetCamPosIntro.x, INTRO_CAMERA_SMOOTH_TIME, delta);
                     camera.position.y = THREE.MathUtils.damp(camera.position.y, targetCamPosIntro.y, INTRO_CAMERA_SMOOTH_TIME, delta);
                     camera.position.z = THREE.MathUtils.damp(camera.position.z, targetCamPosIntro.z, INTRO_CAMERA_SMOOTH_TIME, delta);
                     camera.lookAt(targetFocusPos);
                 }
-                // Pre-Fight camera settles into fight view
                 else if (fightPhase === 'PRE_FIGHT') {
                     const fightViewMidPointX = (p1Group.position.x + p2Group.position.x) / 2;
                     const fightViewTargetZ = THREE.MathUtils.clamp(MIN_CAM_Z + Math.abs(p1Group.position.x - p2Group.position.x) * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
                     const fightViewTargetPos = new THREE.Vector3(fightViewMidPointX, CAM_Y, fightViewTargetZ);
-
                     camera.position.x = THREE.MathUtils.lerp(camera.position.x, fightViewTargetPos.x, LERP_FACTOR * 1.5);
                     camera.position.y = THREE.MathUtils.lerp(camera.position.y, fightViewTargetPos.y, LERP_FACTOR * 1.5);
                     camera.position.z = THREE.MathUtils.lerp(camera.position.z, fightViewTargetPos.z, LERP_FACTOR * 1.5);
                     camera.lookAt(fightViewMidPointX, CAM_LOOKAT_Y, 0);
                 }
-                // Fight/Game Over camera logic (dynamic follow)
                 else if (fightPhase === 'FIGHT' || fightPhase === 'GAME_OVER') {
                     const playersLanded = player1Ref.current?.getHasHitGround() && player2Ref.current?.getHasHitGround();
-                    if (playersLanded) { // Only update if players are on the ground
+                    if (playersLanded) {
                         const cameraDistX = Math.abs(p1Group.position.x - p2Group.position.x);
                         const targetZ = THREE.MathUtils.clamp(MIN_CAM_Z + cameraDistX * BASE_DISTANCE_FACTOR, MIN_CAM_Z, MAX_CAM_Z);
                         const midPointX = (p1Group.position.x + p2Group.position.x) / 2;
@@ -414,16 +563,13 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                         camera.lookAt(midPointX, CAM_LOOKAT_Y, 0);
                     }
                 }
-                // Always update projection matrix if camera logic ran
                 camera.updateProjectionMatrix();
             }
         }
     });
 
-    // Ensure the component returns JSX
-    // Add console log for floor texture state before rendering mesh
     console.log(`[SceneContent Render] Floor Texture State: ${loadedFloorTexture ? 'Loaded' : 'Not Loaded'}`, loadedFloorTexture);
-    console.log(`[SceneContent Render] Player Ready States: P1=${p1Ready}, P2=${p2Ready}`); // Log player ready state
+    console.log(`[SceneContent Render] Player Ready States: P1=${p1Ready}, P2=${p2Ready}`);
 
     return (
         <Suspense fallback={null}>
@@ -432,24 +578,26 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                  ref={controlsRef}
                  enablePan={false}
                  enableZoom={false}
-                 enableRotate={false} // Disable manual rotation
-                 target={[0, CAM_LOOKAT_Y, 0]} // Keep initial target reasonable
+                 enableRotate={false}
+                 target={[0, CAM_LOOKAT_Y, 0]}
              />
              {loadedBackgroundTexture && (
                  <>
                  <mesh position={[0, 45/7, -10]} rotation={[0, 0, 0]}>
                      <planeGeometry args={[30, 90/7]} />
                      <meshBasicMaterial
-                         map={loadedBackgroundTexture} // Apply texture from state
+                         map={loadedBackgroundTexture}
                          side={THREE.DoubleSide}
                          transparent={false}
-                         depthWrite={false} // Keep behind other objects
+                         depthWrite={false}
                      />
                  </mesh>
                  </>
              )}
 
-            {/* Player Characters - Remove onStanceReached prop */}
+            {/* Player Characters - Add onLaunchProjectile prop AND playerIndex prop */}
+            <>
+            {(() => { console.log(`[SceneContent] Rendering PlayerCharacter 1. URL: ${player1ModelUrl}, Facing: right, Phase: ${fightPhase}`); return null; })()}
             <PlayerCharacter
                 ref={player1Ref}
                 modelUrl={player1ModelUrl}
@@ -462,8 +610,14 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP1Ready(true); }}
                 currentHealth={player1Health}
-                isPaused={isPaused} // <-- Pass isPaused
+                isPaused={isPaused}
+                specialImageUrlProp={player1SpecialImageUrl}
+                onLaunchProjectile={handleProjectileLaunch}
+                playerIndex={1} // <-- Pass index 1
             />
+            </>
+            <>
+            {(() => { console.log(`[SceneContent] Rendering PlayerCharacter 2. URL: ${player2ModelUrl}, Facing: left, Phase: ${fightPhase}`); return null; })()}
             <PlayerCharacter
                 ref={player2Ref}
                 modelUrl={player2ModelUrl}
@@ -477,18 +631,21 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 canFight={fightPhase === 'FIGHT'}
                 onCharacterReady={() => { setP2Ready(true); }}
                 currentHealth={player2Health}
-                isPaused={isPaused} // <-- Pass isPaused
+                isPaused={isPaused}
+                specialImageUrlProp={player2SpecialImageUrl}
+                onLaunchProjectile={handleProjectileLaunch}
+                playerIndex={2} // <-- Pass index 2
             />
+            </>
 
             <AIController
                 playerRef={player2Ref}
                 opponentRef={player1Ref}
                 isActive={isAIActive}
                 aiInputRef={aiInputRef}
-                isPaused={isPaused} // <-- Pass isPaused
+                isPaused={isPaused}
             />
 
-            {/* Ground Plane */}
             <mesh
                 rotation={[-Math.PI / 2, 0, 0]}
                 position={[0, GROUND_LEVEL, 0]}
@@ -499,28 +656,36 @@ const SceneContent: React.FC<SceneContentProps> = memo(({
                 {loadedFloorTexture ? (
                      <meshStandardMaterial map={loadedFloorTexture} color="#ffffff" />
                 ) : (
-                     <meshStandardMaterial color="#808080" /> // Fallback while loading
+                     <meshStandardMaterial color="#808080" />
                 )}
             </mesh>
 
-            {/* Lights */}
             <ambientLight intensity={0.6} />
             <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
             <directionalLight position={[-10, 10, -5]} intensity={0.5} />
 
-            {/* Left Side Wall */}
             {leftWallMaterial && (
                 <mesh position={[-15, 45/7, 0]} rotation={[0, Math.PI / 2, 0]} material={leftWallMaterial}>
                     <planeGeometry args={[20, 90/7]} />
                 </mesh>
             )}
 
-            {/* Right Side Wall */}
             {leftWallMaterial && (
                 <mesh position={[15, 45/7, 0]} rotation={[0, -Math.PI / 2, 0]} material={leftWallMaterial}>
                     <planeGeometry args={[20, 90/7]} />
                 </mesh>
             )}
+
+            {/* --- Render Active Projectile --- */}
+            {activeProjectile && activeProjectile.textureUrl ? (
+                <SpecialPowerProjectileComponent
+                    key={activeProjectile.id}
+                    position={activeProjectile.position}
+                    textureUrl={activeProjectile.textureUrl}
+                    isFlipped={activeProjectile.directionX === -1}
+                    scale={activeProjectile.scale}
+                />
+            ) : null}
         </Suspense>
     );
 }); // Close memo wrapper
@@ -534,6 +699,8 @@ export function BattleScene({
     player2Name,
     player1NameAudioUrl,
     player2NameAudioUrl,
+    player1SpecialImageUrl,
+    player2SpecialImageUrl,
     backgroundImageUrl,
     floorTextureUrl,
     onSceneVisible
@@ -548,24 +715,23 @@ export function BattleScene({
     const [showFightText, setShowFightText] = useState(false);
     const [winnerName, setWinnerName] = useState<string | null>(null);
     const [showWinnerBanner, setShowWinnerBanner] = useState(false);
-    const [isPaused, setIsPaused] = useState(false); // <-- Pause State
-    const [showPauseMenu, setShowPauseMenu] = useState(false); // <-- Menu Visibility State
-    const fightStartTriggeredRef = useRef(false); // <-- Ref to track if FIGHT sequence ran
-    const [restartCounter, setRestartCounter] = useState(0); // <-- State to trigger remount
-    const gameOverMenuTimerRef = useRef<NodeJS.Timeout | null>(null); // <-- Ref for the GAME_OVER menu timer
+    const [isPaused, setIsPaused] = useState(false);
+    const [showPauseMenu, setShowPauseMenu] = useState(false);
+    const fightStartTriggeredRef = useRef(false);
+    const [restartCounter, setRestartCounter] = useState(0);
+    const gameOverMenuTimerRef = useRef<NodeJS.Timeout | null>(null);
 
     const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
-    const router = useRouter(); // <-- Get router instance
+    const router = useRouter();
 
-    // --- Effect to Reset State on Restart --- 
+    // --- Effect to Reset State on Restart ---
     useEffect(() => {
-        // Skip the initial mount (restartCounter === 0)
         if (restartCounter > 0) {
             console.log("[BattleScene] Restart triggered. Resetting states.");
             setPlayer1Health(MAX_HEALTH);
             setPlayer2Health(MAX_HEALTH);
             setIsAIEnabled(false);
-            setFightPhase('LOADING'); // Go back to loading to re-trigger the intro sequence
+            setFightPhase('LOADING');
             setP1IntroAnim(null);
             setP2IntroAnim(null);
             setShowReadyText(false);
@@ -581,19 +747,18 @@ export function BattleScene({
     const versusSoundUrl = '/sounds/voices/versus.mp3';
     const readySoundUrl = '/sounds/voices/ready.mp3';
     const fightSoundUrl = '/sounds/voices/fight.mp3';
-    const winsSoundUrl = '/sounds/voices/wins.mp3'; // Add wins sound URL
+    const winsSoundUrl = '/sounds/voices/wins.mp3';
 
     // --- Effect to Handle Pause Key Press ---
     useEffect(() => {
         const handleKeyDown = (event: KeyboardEvent) => {
             if (event.key === 'Enter') {
-                // Only allow pausing/unpausing during READY or FIGHT
-                if (fightPhase === 'FIGHT' || fightPhase === 'READY') { // <-- Removed PRE_FIGHT
+                if (fightPhase === 'FIGHT' || fightPhase === 'READY') {
                     setIsPaused((prevPaused) => {
                         const nextPaused = !prevPaused;
-                        setShowPauseMenu(nextPaused); // Sync menu visibility
+                        setShowPauseMenu(nextPaused);
                         if (nextPaused) {
-                            playSoundEffect('/sounds/effects/pause.mp3'); // Play pause sound only when pausing
+                            playSoundEffect('/sounds/effects/pause.mp3');
                         }
                         console.log(`[BattleScene] Pause Toggled: ${nextPaused}`);
                         return nextPaused;
@@ -603,27 +768,21 @@ export function BattleScene({
                 }
             }
         };
-
         window.addEventListener('keydown', handleKeyDown);
         return () => {
             window.removeEventListener('keydown', handleKeyDown);
         };
-    }, [fightPhase]); // Re-attach listener if fightPhase changes (ensures correct phase check)
+    }, [fightPhase]);
 
     // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
-        // <-- PAUSE CHECK: Prevent phase transitions while paused -->
         if (isPaused) {
             console.log(`[BattleScene Phase Effect] Paused. Skipping transition for phase ${fightPhase}.`);
             return;
         }
-
         console.log(`[BattleScene] Fight Phase Changed: ${fightPhase}`);
         let phaseTimer: NodeJS.Timeout | undefined;
         let soundDelayTimer: NodeJS.Timeout | undefined;
-
-        // Clear any pending sound delay timer from the previous phase execution
-        // (Ensure the cleanup function below handles this correctly)
 
         switch (fightPhase) {
             case 'INTRO_START':
@@ -632,17 +791,16 @@ export function BattleScene({
                 phaseTimer = setTimeout(() => setFightPhase('INTRO_P1'), 500);
                 break;
             case 'INTRO_P1':
-                onSceneVisible(); // Call the callback when P1 intro starts
-                playSound(player1NameAudioUrl); // Play P1 name immediately
-                // Delay playing "versus" sound
+                onSceneVisible();
+                playSound(player1NameAudioUrl);
                 soundDelayTimer = setTimeout(() => {
                     console.log("[BattleScene] Playing delayed versus sound (2s delay).");
                     playSound(versusSoundUrl);
-                }, 2000); // INCREASED DELAY to 2000ms (2 seconds)
-                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000); // Keep total phase duration the same for now
+                }, 2000);
+                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000);
                 break;
             case 'INTRO_P2':
-                playSound(player2NameAudioUrl); // Play P2 name immediately
+                playSound(player2NameAudioUrl);
                 phaseTimer = setTimeout(() => setFightPhase('PRE_FIGHT'), 4000);
                 break;
             case 'PRE_FIGHT':
@@ -660,32 +818,23 @@ export function BattleScene({
                     setShowReadyText(false);
                     if (fightPhase === 'READY' && !isPaused) {
                         console.log("[BattleScene Phase Effect - READY timeout] Conditions met. Playing sound, enabling AI, setting ref, setting phase to FIGHT.");
-                        // --- Trigger Fight Sequence Here --- 
                         playSound(fightSoundUrl);
-                        setIsAIEnabled(true); // Enable AI immediately
-                        fightStartTriggeredRef.current = true; // Mark as triggered
+                        setIsAIEnabled(true);
+                        fightStartTriggeredRef.current = true;
                         setFightPhase('FIGHT');
-                        // Note: setShowFightText is handled in the FIGHT case now
                     }
                 }, 1000);
                 break;
             case 'FIGHT':
                 console.log(`[BattleScene Phase Effect - FIGHT] Entering. IsPaused: ${isPaused}, Winner: ${winnerName}`);
-                
-                // Show FIGHT text only when triggered from READY
                 if (fightStartTriggeredRef.current) {
                     setShowFightText(true);
-                    // Set timeout to hide text shortly after
-                    phaseTimer = setTimeout(() => setShowFightText(false), 1000); // Use phaseTimer for cleanup
-                    fightStartTriggeredRef.current = false; // Consume the trigger flag
+                    phaseTimer = setTimeout(() => setShowFightText(false), 1000);
+                    fightStartTriggeredRef.current = false;
                 }
-
-                // Ensure AI state is correct
                 if (!isPaused && !winnerName) {
-                    setIsAIEnabled(true); 
+                    setIsAIEnabled(true);
                 } else {
-                    // If resuming or re-entering FIGHT phase after restart (and not game over),
-                    // ensure AI is enabled. It might have been disabled by GAME_OVER or the initial state.
                     console.log(`[BattleScene Phase Effect - FIGHT] Conditions NOT met or resuming. IsPaused: ${isPaused}, fightStartTriggeredRef: ${fightStartTriggeredRef.current}, Winner: ${winnerName}`);
                     if (!winnerName) {
                         setIsAIEnabled(true);
@@ -697,75 +846,60 @@ export function BattleScene({
                  setShowReadyText(false);
                  setShowFightText(false);
                  setShowWinnerBanner(true);
-
-                 // Play Winner Name Audio then "Wins" Audio
                  const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
-                 let winsSoundPlayed = false; // Flag to ensure pause timer starts only once
-
+                 let winsSoundPlayed = false;
                  const playWinsAndStartTimer = () => {
-                     if (winsSoundPlayed) return; // Prevent duplicate timers
+                     if (winsSoundPlayed) return;
                      winsSoundPlayed = true;
                      console.log("[BattleScene GAME_OVER] Playing wins sound.");
                      playSound(winsSoundUrl);
-                     // --- START 5-SECOND PAUSE MENU TIMER ---
                      console.log("[BattleScene GAME_OVER] Starting 5s timer to show Game Over menu.");
-                     // Store timer ID in the specific ref
                      gameOverMenuTimerRef.current = setTimeout(() => {
-                         // Check again if still in GAME_OVER and not manually paused before showing menu
                          if (fightPhase === 'GAME_OVER' && !isPaused) {
                              console.log("[BattleScene GAME_OVER] 5s timer finished. Showing Game Over menu.");
-                             setIsPaused(true); // Set paused state
-                             setShowPauseMenu(true); // Show the menu UI
+                             setIsPaused(true);
+                             setShowPauseMenu(true);
                          }
-                         // No need for else log here, it's handled by the check
-                         gameOverMenuTimerRef.current = null; // Clear ref after execution/check
-                     }, 5000); // 5000ms = 5 seconds
-                     // --- END 5-SECOND PAUSE MENU TIMER ---
+                         gameOverMenuTimerRef.current = null;
+                     }, 5000);
                  };
-
                  if (winnerAudioUrl) {
                      try {
                         const nameAudio = new Audio(winnerAudioUrl);
                         nameAudio.onended = () => {
                              console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Starting wins sequence.`);
-                             // Wait a bit after name ends, then play "wins" and start timer
                              soundDelayTimer = setTimeout(playWinsAndStartTimer, 300);
                         };
                         nameAudio.onerror = (e) => {
                              console.error(`[BattleScene] Error loading/playing winner name audio (${winnerAudioUrl}):`, e);
-                             // Fallback: Play "wins" sound immediately and start timer
                              playWinsAndStartTimer();
                         };
                         nameAudio.play().catch(error => {
                              console.error(`[BattleScene] Error initiating winner name audio playback (${winnerAudioUrl}):`, error);
-                             playWinsAndStartTimer(); // Fallback
+                             playWinsAndStartTimer();
                         });
                      } catch (error) {
                          console.error(`[BattleScene] Error creating Audio object for winner name (${winnerAudioUrl}):`, error);
-                         playWinsAndStartTimer(); // Fallback
+                         playWinsAndStartTimer();
                      }
                  } else {
                      console.warn(`[BattleScene] No name audio URL found for winner: ${winnerName}. Playing wins sound directly.`);
-                     // No name audio, play "wins" and start timer immediately
                      playWinsAndStartTimer();
                  }
-                 break; // End GAME_OVER case
+                 break;
              case 'LOADING':
                  setIsAIEnabled(false);
-                 fightStartTriggeredRef.current = false; // Reset fight trigger on load
+                 fightStartTriggeredRef.current = false;
                  setShowReadyText(false);
                  setShowFightText(false);
                  setP1IntroAnim(null);
                  setP2IntroAnim(null);
                  break;
         }
-
-        // Cleanup function: Clear ALL timers associated with this effect instance
         return () => {
              console.log("[BattleScene] Cleanup: Clearing timers for phase:", fightPhase);
              if (phaseTimer) clearTimeout(phaseTimer);
              if (soundDelayTimer) clearTimeout(soundDelayTimer);
-             // Also clear the specific game over menu timer if it exists
              if (gameOverMenuTimerRef.current) {
                  clearTimeout(gameOverMenuTimerRef.current);
                  gameOverMenuTimerRef.current = null;
@@ -776,9 +910,7 @@ export function BattleScene({
 
     // --- Effect to check for Game Over ---
     useEffect(() => {
-        // <-- PAUSE CHECK: Don't check game over if paused -->
         if (isPaused) return;
-
         if (fightPhase === 'FIGHT') {
             let determinedWinner: string | null = null;
             if (player1Health <= 0) {
@@ -786,7 +918,6 @@ export function BattleScene({
             } else if (player2Health <= 0) {
                 determinedWinner = player1Name;
             }
-
             if (determinedWinner) {
                 console.log(`[BattleScene] Game Over! Winner: ${determinedWinner}`);
                 setWinnerName(determinedWinner);
@@ -804,23 +935,19 @@ export function BattleScene({
 
     const handleRestart = () => {
         playSoundEffect('/sounds/effects/confirm.mp3');
-        // --- Explicitly clear the game over menu timer --- 
         if (gameOverMenuTimerRef.current) {
             clearTimeout(gameOverMenuTimerRef.current);
             gameOverMenuTimerRef.current = null;
             console.log("[BattleScene handleRestart] Cleared pending GAME_OVER menu timer.");
         }
-        // ---------------------------------------------------
-        // Increment counter to trigger remount via key change
         setRestartCounter(prev => prev + 1);
-        setIsPaused(false); // Ensure menu closes and state is unpaused
+        setIsPaused(false);
         setShowPauseMenu(false);
     };
 
     const handleBackToSelect = () => {
         playSoundEffect('/sounds/effects/confirm.mp3');
-        // Navigate back to the VS screen for the original player 1
-        fightStartTriggeredRef.current = false; // Reset trigger on back
+        fightStartTriggeredRef.current = false;
         router.push(`/vs/${player1Id}`);
     };
 
@@ -829,14 +956,15 @@ export function BattleScene({
             <React.Fragment key={restartCounter}>
                 <Canvas
                     shadows
-                    // Keep initial camera settings for the default fight view
                     camera={{ position: [CAM_X, CAM_Y, MIN_CAM_Z + 0.2], fov: INITIAL_FOV }}
                     style={{ height: '100%', width: '100%', position: 'absolute', top: 0, left: 0, zIndex: 1 }}
                 >
                     <SceneContent
                         player1ModelUrl={player1ModelUrl}
                         player2ModelUrl={player2ModelUrl}
-                        isAIActive={isAIEnabled && !isPaused} // <-- AI Active only if enabled AND not paused
+                        player1SpecialImageUrl={player1SpecialImageUrl}
+                        player2SpecialImageUrl={player2SpecialImageUrl}
+                        isAIActive={isAIEnabled && !isPaused}
                         backgroundImageUrl={backgroundImageUrl}
                         floorTextureUrl={floorTextureUrl}
                         fightPhase={fightPhase}
@@ -850,7 +978,7 @@ export function BattleScene({
                         p2IntroAnim={p2IntroAnim}
                         player1Health={player1Health}
                         player2Health={player2Health}
-                        isPaused={isPaused} // <-- Pass isPaused down
+                        isPaused={isPaused}
                     />
                 </Canvas>
 
@@ -872,8 +1000,7 @@ export function BattleScene({
                  }}>
                      {showReadyText && !isPaused && <p style={{ fontSize: '4em', color: 'white', fontWeight: 'bold', textShadow: '2px 2px 4px #000000' }}>Ready?</p>}
                      {showFightText && !isPaused && <p style={{ fontSize: '5em', color: 'red', fontWeight: 'bold', textShadow: '3px 3px 6px #000000' }}>FIGHT!</p>}
-                     {/* --- Winner Banner --- */}
-                    {showWinnerBanner && winnerName && !isPaused && ( // Hide winner banner if paused
+                    {showWinnerBanner && winnerName && !isPaused && (
                         <p style={{
                             fontSize: '3.5em',
                             color: '#FFD700',
@@ -890,17 +1017,15 @@ export function BattleScene({
                  {showPauseMenu && (
                      <div style={{
                          position: 'absolute', inset: 0, zIndex: 10,
-                         backgroundColor: 'rgba(0, 0, 0, 0.7)', // Semi-transparent background
+                         backgroundColor: 'rgba(0, 0, 0, 0.7)',
                          display: 'flex', flexDirection: 'column',
                          alignItems: 'center', justifyContent: 'center',
                          color: 'white', fontFamily: 'Arial, sans-serif',
-                         pointerEvents: 'auto' // Enable pointer events for the menu
+                         pointerEvents: 'auto'
                      }}>
-                         {/* --- Conditional Title --- */}
                          <h2 style={{ fontSize: '3em', marginBottom: '40px', textShadow: '2px 2px 4px #000' }}>
                              {fightPhase === 'GAME_OVER' ? 'Game Over' : 'Paused'}
                          </h2>
-                         {/* --- Conditional Resume Button --- */}
                          {fightPhase !== 'GAME_OVER' && (
                             <button onClick={handleResume} style={pauseButtonStyle}>Resume Fight</button>
                          )}

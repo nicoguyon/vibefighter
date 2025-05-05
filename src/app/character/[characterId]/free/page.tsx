@@ -32,9 +32,11 @@ import {
 // Re-import React for Client Component
 import React, { Suspense, useRef, useState, useEffect, useMemo, useCallback } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
-import { OrbitControls, useGLTF, Environment, Html } from '@react-three/drei'; // Re-add Environment import
+import { OrbitControls, useGLTF, Environment, Html, useTexture } from '@react-three/drei'; // Re-add Environment import, Add useTexture
 import * as THREE from 'three';
 import { useControls, folder, Leva } from 'leva';
+import { Texture } from 'three'; // Add Texture import
+import { MathUtils } from 'three';
 
 // -------- Types (Used by both Server potentially and Client) --------
 
@@ -73,10 +75,21 @@ interface AnimationRunnerProps {
 // Define possible pose states
 type PoseState = 'initial' | 'stance' | 'blocking' | 'ducking' | 'walking' | 'transitioning' | 'punching' | 'kicking' | 'waving' | 'armsCrossed' | 'bowing' | 'falling' | 'fallen'; // <-- ADDED FALLING STATES
 
+// Define special power status states
+type SpecialPowerStatus = 'idle' | 'growing' | 'throwing' | 'hit';
+
 // -------- Server Component Implementation --------
 
 // Opt out of caching
 export const dynamic = 'force-dynamic';
+
+// Define constants for animation timings (should match those in clips.ts)
+const SPECIAL_POWER_PREP_DURATION = 0.5;
+const SPECIAL_POWER_PREP_HOLD_DURATION = 0.5;
+const SPECIAL_POWER_THROW_DURATION = 0.5;
+const SPECIAL_POWER_HOLD_DURATION = 1.0;
+const SPECIAL_POWER_RETURN_DURATION = 0.5;
+const SPECIAL_POWER_TOTAL_DURATION = SPECIAL_POWER_PREP_DURATION + SPECIAL_POWER_PREP_HOLD_DURATION + SPECIAL_POWER_THROW_DURATION + SPECIAL_POWER_HOLD_DURATION + SPECIAL_POWER_RETURN_DURATION;
 
 export default function CharacterPoseEditor() {
     // --- State Variables ---
@@ -107,7 +120,17 @@ export default function CharacterPoseEditor() {
     const [currentPoseState, setCurrentPoseState] = useState<PoseState>('initial');
     const [capturedStancePose, setCapturedStancePose] = useState<StartPose | null>(null); // <-- ADDED STATE
     const [levaInitialized, setLevaInitialized] = useState(false);
-    
+    const [specialImageUrl, setSpecialImageUrl] = useState<string | null>(null); // State for the image URL
+    const [specialImageTexture, setSpecialImageTexture] = useState<Texture | null>(null); // State for the loaded texture
+    const [specialPowerActive, setSpecialPowerActive] = useState(false); // Is the projectile currently active?
+    const [specialPowerStatus, setSpecialPowerStatus] = useState<SpecialPowerStatus>('idle');
+    const [specialPowerPosition, setSpecialPowerPosition] = useState<[number, number, number]>([0, 1, 0.5]); // Initial default
+    const [specialPowerScale, setSpecialPowerScale] = useState<[number, number, number]>([1, 1, 1]); // Initial default (will be set small on trigger)
+    const [isFlipped, setIsFlipped] = useState(false); // Add isFlipped state
+
+    // Ref for special power timer
+    const specialPowerTimerRef = useRef<NodeJS.Timeout | null>(null);
+
     // Get characterId from URL params
     const params = useParams();
     const characterId = params.characterId as string;
@@ -122,7 +145,7 @@ export default function CharacterPoseEditor() {
         const fetchCharacter = async () => {
             const { data: characterData, error } = await supabase
                 .from('characters')
-                .select('id, name, model_glb_url, status')
+                .select('id, name, model_glb_url, status, special_image')
                 .eq('id', characterId)
                 .single();
 
@@ -133,6 +156,8 @@ export default function CharacterPoseEditor() {
             }
 
             setCharacterName(characterData.name || 'Unnamed Fighter');
+            // Store the special image URL
+            setSpecialImageUrl(characterData.special_image); // <-- ADDED
 
             let finalModelUrl = characterData.model_glb_url;
             if (finalModelUrl && !finalModelUrl.startsWith('http') && process.env.NEXT_PUBLIC_R2_PUBLIC_URL) {
@@ -312,7 +337,7 @@ export default function CharacterPoseEditor() {
     useEffect(() => {
         if (mixer && skeleton && Object.keys(initialPose).length > 0) {
              let createdReset = false, createdStance = false, createdIdle = false, createdWalk = false, createdPunch = false, createdBlock = false, createdDuck = false, createdDuckKick = false, createdHello = false;
-             
+
              // Create Reset Action (if not already created)
              if (!resetPoseAction) {
                  const resetClip = createResetPoseClip(skeleton, initialPose);
@@ -500,15 +525,15 @@ export default function CharacterPoseEditor() {
              // Create Special Power Throw Action (if not already created)
              if (!specialPowerThrowAction) {
                  // Create a placeholder clip initially. It will be replaced dynamically.
-                 const placeholderClip = createSpecialPowerThrowClip(skeleton, initialPose, null); 
+                 const placeholderClip = createSpecialPowerThrowClip(skeleton, initialPose, null);
                  if (placeholderClip) {
                      const action = mixer.clipAction(placeholderClip);
                      action.setLoop(THREE.LoopOnce, 1);
                      action.clampWhenFinished = false; // Return to initial after throw
                      setSpecialPowerThrowAction(action);
                      console.log("[Editor] Special Power Throw Action created (placeholder).");
-                 } else { 
-                     console.error("[Editor] Failed to create placeholder Special Power Throw Clip/Action."); 
+                 } else {
+                     console.error("[Editor] Failed to create placeholder Special Power Throw Clip/Action.");
                  }
              }
 
@@ -532,15 +557,24 @@ export default function CharacterPoseEditor() {
              if (specialPowerThrowAction) { specialPowerThrowAction.stop(); setSpecialPowerThrowAction(null); } // <-- ADDED CLEANUP
              setIsPlaying(false); // Reset playing state
              setCurrentPoseState('initial'); // Reset pose state
+             setSpecialPowerActive(false); // <-- ADDED CLEANUP
+             // Ensure timer is cleared if mixer/skeleton disappears mid-throw prep
+             if (specialPowerTimerRef.current) {
+                 clearTimeout(specialPowerTimerRef.current);
+                 specialPowerTimerRef.current = null;
+                 console.log("[Editor] Cleared special power timer due to mixer/skeleton loss.");
+             }
         }
 
         // Cleanup: Stop actions but don't nullify state here, let the state clearing above handle it
         return () => {
-             // No explicit stop needed here if state is managed correctly on unmount/deps change
              // console.log("[Editor] Cleaning up actions (stop only)");
-             // resetPoseAction?.stop();
-             // fightStanceAction?.stop();
-             // idleBreathAction?.stop();
+             // The action.stop() calls in the 'else' block above handle stopping
+             // Clear the special power timer if the component unmounts
+             if (specialPowerTimerRef.current) {
+                 clearTimeout(specialPowerTimerRef.current);
+                 console.log("[Editor] Cleared special power timer on component unmount/cleanup.");
+             }
         };
         // Depend on mixer, skeleton, initialPose. Also include action states to recreate if they somehow get nullified.
     }, [mixer, skeleton, initialPose, resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction]); // <-- ADDED DEPENDENCY
@@ -803,7 +837,7 @@ export default function CharacterPoseEditor() {
         updates['TorsoEulerOrder'] = initialTorsoOrder;
         updates['HeadNeckEulerOrder'] = initialHeadNeckOrder;
         
-        // Apply all updates to Leva
+        // Apply ALL updates from initial pose
         setLevaControls(updates);
 
     }, [resetPoseAction, fightStanceAction, idleBreathAction, walkCycleAction, rightPunchAction, blockPoseAction, duckPoseAction, duckKickAction, transitionToHelloAction, helloWaveLoopAction, transitionToArmsCrossedAction, armsCrossedBreathAction, bowAction, leftPunchAction, fallBackwardAction, specialPowerThrowAction, mixer, setAutoRotate, initialPose, skeleton, setLevaControls, setIsPlaying, setCurrentPoseState]);
@@ -1481,8 +1515,8 @@ export default function CharacterPoseEditor() {
 
     // --- Special Power Throw Handler ---
     const triggerSpecialPowerThrow = useCallback(() => {
-        if (!skeleton || !mixer || !specialPowerThrowAction) {
-             console.error("[Editor] Cannot trigger Special Power Throw: Skeleton, Mixer or Action missing.");
+        if (!skeleton || !mixer || !specialPowerThrowAction || specialPowerStatus !== 'idle') { // Only trigger if idle
+             console.warn("[Editor] Cannot trigger Special Power Throw: Requirements not met or already active.", { skeleton: !!skeleton, mixer: !!mixer, action: !!specialPowerThrowAction, status: specialPowerStatus });
              return;
         }
 
@@ -1495,10 +1529,11 @@ export default function CharacterPoseEditor() {
 
         // CREATE a new clip using the live start pose
         const newThrowClip = createSpecialPowerThrowClip(
-            skeleton, 
-            initialPose, 
-            livePose, 
-            'SpecialPowerThrow' 
+            skeleton,
+            initialPose,
+            livePose,
+            'SpecialPowerThrow'
+            // Use default timings from clips.ts
         );
 
         if (!newThrowClip) {
@@ -1521,9 +1556,28 @@ export default function CharacterPoseEditor() {
         setSpecialPowerThrowAction(newAction); // Update state
 
         console.log("[Editor] Triggering Special Power Throw with updated clip/action...");
-        setIsPlaying(true); 
+        setIsPlaying(true);
         setCurrentPoseState('transitioning'); // Or maybe 'casting'? For now, use 'transitioning'
         setAutoRotate(false);
+        setSpecialPowerActive(true);       // Activate the projectile visuals
+        setSpecialPowerStatus('growing');   // Start the growing phase
+        setSpecialPowerScale([0.01, 0.01, 0.01]); // Set initial tiny scale
+
+        // TODO: Calculate initial position between hands based on prep pose targets
+        // For now, use a placeholder relative to spine
+        const spineBone = skeleton.bones.find(b => b.name === 'Spine02');
+        if (spineBone) {
+            const worldPos = new THREE.Vector3();
+            spineBone.getWorldPosition(worldPos);
+            // Adjust position slightly in front of the spine bone
+            // We'll refine attachment logic in the component's useFrame
+            setSpecialPowerPosition([worldPos.x, worldPos.y + 0.1, worldPos.z + 0.3]);
+            console.log("[Editor] Set initial projectile position relative to Spine02:", [worldPos.x, worldPos.y + 0.1, worldPos.z + 0.3]);
+        } else {
+            console.warn("[Editor] Spine02 bone not found for initial projectile positioning.");
+            setSpecialPowerPosition([0, 1, 0.5]); // Fallback position
+        }
+
 
         // Stop all other actions cleanly using fades
         resetPoseAction?.fadeOut(0.2);
@@ -1534,7 +1588,7 @@ export default function CharacterPoseEditor() {
         leftPunchAction?.fadeOut(0.2);
         blockPoseAction?.fadeOut(0.2);
         duckPoseAction?.fadeOut(0.2);
-        duckKickAction?.fadeOut(0.2); 
+        duckKickAction?.fadeOut(0.2);
         transitionToHelloAction?.fadeOut(0.2);
         helloWaveLoopAction?.fadeOut(0.2);
         transitionToArmsCrossedAction?.fadeOut(0.2);
@@ -1545,10 +1599,29 @@ export default function CharacterPoseEditor() {
         // Play the NEW action
         newAction.reset().fadeIn(0.2).play();
 
+        // Schedule the transition to 'throwing' state
+        const throwStartTime = (SPECIAL_POWER_PREP_DURATION + SPECIAL_POWER_PREP_HOLD_DURATION) * 1000; // in ms
+        console.log(`[Editor] Scheduling projectile 'throwing' state change in ${throwStartTime}ms. Timer Ref before set:`, specialPowerTimerRef.current); // Log timer ref before setting
+        // Clear any existing timer before setting a new one
+        if (specialPowerTimerRef.current) {
+            clearTimeout(specialPowerTimerRef.current);
+            console.log("[Editor] Cleared previous special power timer before setting new one.");
+        }
+        const timerId = setTimeout(() => {
+             // Log current status right before attempting to change it
+             console.log(`[Editor] Timer Fired! Current Status: ${specialPowerStatus}. Setting projectile status to 'throwing'`);
+            setSpecialPowerStatus('throwing');
+            specialPowerTimerRef.current = null; // Clear the ref after the timer fires
+        }, throwStartTime);
+
+        // Store timerId or manage cleanup if component unmounts or animation is cancelled
+        specialPowerTimerRef.current = timerId; // Store the timer ID
+
     }, [
         skeleton,
         mixer,
         initialPose,
+        specialPowerStatus, // Add status dependency
         // Actions to check/fade out
         resetPoseAction,
         fightStanceAction,
@@ -1570,7 +1643,11 @@ export default function CharacterPoseEditor() {
         setSpecialPowerThrowAction,
         setAutoRotate,
         setIsPlaying,
-        setCurrentPoseState
+        setCurrentPoseState,
+        setSpecialPowerActive, // Added
+        setSpecialPowerStatus, // Added
+        setSpecialPowerScale, // Added
+        setSpecialPowerPosition // Added
     ]);
 
     // --- Conditional Rendering based on Status ---
@@ -1665,6 +1742,21 @@ export default function CharacterPoseEditor() {
                     <Suspense fallback={ <Html center> <p className="text-arcade-yellow text-xl animate-pulse">Loading Model...</p> </Html> }>
                         <Model url={modelUrl!} setAutoRotate={setAutoRotate} setMixer={setMixer} setInitialPose={setInitialPose} setSkeleton={setSkeleton} />
                         <AnimationRunner mixer={mixer} />
+                         {/* Render the projectile */}
+                         <SpecialPowerProjectile 
+                             imageUrl={specialImageUrl} 
+                             isActive={specialPowerActive} 
+                             setSpecialImageTexture={setSpecialImageTexture} 
+                             status={specialPowerStatus} // Pass status
+                             position={specialPowerPosition} // Pass position
+                             scale={specialPowerScale} // Pass scale
+                             skeleton={skeleton} // Pass skeleton for attaching
+                             setIsActive={setSpecialPowerActive}
+                             setStatus={setSpecialPowerStatus}
+                             setPosition={setSpecialPowerPosition}
+                             setScale={setSpecialPowerScale}
+                             isFlipped={isFlipped} // <-- ADD PROP TYPE HERE
+                         />
                     </Suspense>
                     <OrbitControls enablePan={true} enableZoom={true} enableRotate={true} autoRotate={autoRotate} autoRotateSpeed={1.5} target={[0, 0.5, 0]} onChange={() => { if (autoRotate) setAutoRotate(false); }} />
                 </Canvas>
@@ -1750,3 +1842,189 @@ function createResetPoseClip(skeleton: THREE.Skeleton | null, initialPose: Recor
     return new THREE.AnimationClip('ResetPose', duration, tracks);
 } 
 */ 
+
+// -------- Special Power Projectile Component --------
+interface SpecialPowerProjectileProps {
+    imageUrl: string | null;
+    isActive: boolean;
+    setSpecialImageTexture: React.Dispatch<React.SetStateAction<Texture | null>>; // Pass setter to store texture
+    status: SpecialPowerStatus; // Add status prop
+    position: [number, number, number]; // Add position prop
+    scale: [number, number, number]; // Add scale prop
+    skeleton: THREE.Skeleton | null; // Add skeleton prop
+    // Add setters
+    setIsActive: React.Dispatch<React.SetStateAction<boolean>>;
+    setStatus: React.Dispatch<React.SetStateAction<SpecialPowerStatus>>;
+    setPosition: React.Dispatch<React.SetStateAction<[number, number, number]>>;
+    setScale: React.Dispatch<React.SetStateAction<[number, number, number]>>;
+    isFlipped: boolean; // <-- ADD PROP TYPE HERE
+}
+
+function SpecialPowerProjectile({ 
+    imageUrl, 
+    isActive, 
+    setSpecialImageTexture, 
+    status, 
+    position, // Current position from parent state
+    scale, // Current scale from parent state
+    skeleton,
+    // Add setters
+    setIsActive,
+    setStatus,
+    setPosition,
+    setScale,
+    isFlipped // <-- RECEIVE PROP HERE
+}: SpecialPowerProjectileProps) {
+    const meshRef = useRef<THREE.Mesh>(null!);
+    // useTexture is complex but generally safe if URL doesn't change drastically
+    const texture = useTexture(imageUrl || '');
+    const growthStartTime = useRef<number>(0); // Track when growth starts
+    const throwStartTime = useRef<number>(0); // Ref to track when throwing starts
+
+    // --- Call ALL hooks unconditionally ---
+    const aspect = texture?.image ? texture.image.width / texture.image.height : 1; // Use optional chaining for safety
+    const planeSize = 0.25; // <<< ADJUSTED SIZE (Smaller)
+    const targetScaleVec = useMemo(() => new THREE.Vector3(planeSize * aspect, planeSize, 1), [aspect, planeSize]);
+    const growthDuration = (SPECIAL_POWER_PREP_DURATION + SPECIAL_POWER_PREP_HOLD_DURATION) * 1000; // in ms
+    const throwAndHoldDuration = (SPECIAL_POWER_THROW_DURATION + SPECIAL_POWER_HOLD_DURATION) * 1000; // in ms
+    const handMidpoint = useMemo(() => new THREE.Vector3(), []);
+    const worldOffset = useMemo(() => new THREE.Vector3(0, 0.05, 0.08), []); // Adjusted: Lower Y, much closer Z
+
+    useEffect(() => {
+        // Store texture (conditionally is fine inside useEffect)
+        if(texture) setSpecialImageTexture(texture);
+
+        // Handle activation logic
+        if (isActive && status === 'growing') {
+             growthStartTime.current = performance.now();
+             if (meshRef.current) {
+                 meshRef.current.scale.set(0.01, 0.01, 0.01);
+                 console.log("[Projectile] Resetting scale for growth");
+             }
+        }
+    }, [texture, setSpecialImageTexture, isActive, status]);
+
+    // --- NEW useEffect for flipping ---
+    useEffect(() => {
+        if (texture) {
+            // console.log(`[Projectile] Applying flip: ${isFlipped}`); // Optional Log
+            texture.repeat.x = isFlipped ? -1 : 1;
+            texture.offset.x = isFlipped ? 1 : 0;
+            // texture.needsUpdate = true; // Often not needed for repeat/offset
+        }
+    }, [texture, isFlipped]); // Depend on texture and isFlipped
+
+    useFrame((state, delta) => {
+        // Don't run frame logic if inactive or mesh isn't ready
+        if (!meshRef.current || !isActive || !texture) return;
+
+        const now = performance.now();
+
+        switch (status) {
+            case 'growing': {
+                const growingElapsedTime = now - growthStartTime.current;
+                console.log(`[Projectile Growing] Elapsed: ${growingElapsedTime.toFixed(0)}ms, Duration: ${growthDuration}ms`); // LOGGING
+
+                // --- Scale Interpolation ---
+                const growthProgress = Math.min(growingElapsedTime / growthDuration, 1);
+                meshRef.current.scale.lerpVectors(
+                    new THREE.Vector3(0.01, 0.01, 0.01),
+                    targetScaleVec,
+                    growthProgress
+                );
+
+                // --- Position Attachment (RESTORED) ---
+                // Comment out the simplified logic:
+                // console.log("[Projectile Growing] Using simplified position from props.");
+                // meshRef.current.position.set(position[0], position[1], position[2]);
+
+                // --- Restore complex logic ---
+                 if (skeleton) {
+                     const lHand = skeleton.bones.find(b => b.name === 'L_Hand');
+                     const rHand = skeleton.bones.find(b => b.name === 'R_Hand');
+                     if (lHand && rHand) {
+                          const lPos = lHand.getWorldPosition(new THREE.Vector3());
+                          const rPos = rHand.getWorldPosition(new THREE.Vector3());
+                          handMidpoint.lerpVectors(lPos, rPos, 0.5).add(worldOffset); // worldOffset will be adjusted below
+                          meshRef.current.position.copy(handMidpoint);
+                     } else {
+                         // Fallback to spine
+                         const spineBone = skeleton.bones.find(b => b.name === 'Spine02');
+                         if (spineBone) {
+                             spineBone.getWorldPosition(meshRef.current.position).add(worldOffset); // worldOffset will be adjusted below
+                         } else {
+                              // Absolute fallback
+                              meshRef.current.position.set(position[0], position[1], position[2]);
+                         }
+                     }
+                 } else {
+                      // Fallback if no skeleton
+                      meshRef.current.position.set(position[0], position[1], position[2]);
+                 }
+                 // --- End restored logic ---
+
+
+                // --- Check for Transition to Throwing ---
+                const shouldTransition = growingElapsedTime >= growthDuration;
+                // console.log(`[Projectile Growing] Should Transition? ${shouldTransition}`); // Optional finer logging
+                if (shouldTransition) {
+                    console.log("[Projectile] Growth finished. Transitioning to throwing.");
+                    setStatus('throwing');
+                    throwStartTime.current = now; // Record the time throwing starts
+                }
+                 break;
+            }
+
+            case 'throwing': {
+                const throwingElapsedTime = now - throwStartTime.current;
+                console.log(`[Projectile Throwing] Elapsed: ${throwingElapsedTime.toFixed(0)}ms, Duration: ${throwAndHoldDuration}ms, Pos Z: ${meshRef.current.position.z.toFixed(2)}`); // LOGGING
+
+                // --- Movement Logic ---
+                const velocity = 5;
+                meshRef.current.position.z += velocity * delta;
+
+                // --- Deactivation Logic (Based on time OR distance) ---
+                const despawnDistanceThreshold = 10;
+                const timeThresholdMet = throwingElapsedTime >= throwAndHoldDuration;
+                const distanceThresholdMet = meshRef.current.position.z > despawnDistanceThreshold;
+                 console.log(`[Projectile Throwing] Time Met: ${timeThresholdMet}, Dist Met: ${distanceThresholdMet}`); // LOGGING
+
+                if (timeThresholdMet || distanceThresholdMet) {
+                    console.log(`[Projectile] Despawning - Time: ${timeThresholdMet}, Dist: ${distanceThresholdMet}`);
+                    setIsActive(false);
+                    setStatus('idle');
+                }
+                 break;
+            }
+
+            // Optional: Add cases for 'idle' or 'hit' if specific logic is needed
+            // case 'idle':
+            // case 'hit':
+            // default:
+            //     break; // Do nothing for other states
+        } // End switch
+
+         // --- Look At Camera (runs for all active statuses) ---
+         if (meshRef.current) {
+             const cameraPosition = state.camera.position;
+             meshRef.current.lookAt(cameraPosition.x, meshRef.current.position.y, cameraPosition.z);
+         }
+    }); // End useFrame
+
+    // Restore the start of the useEffect hook
+    useEffect(() => {
+        if (meshRef.current && isActive) {
+            // Set initial position when activated, before useFrame takes over
+            meshRef.current.position.set(...position);
+        }
+    }, [isActive, position]); // Depend on position as well
+
+    // --- Conditional Rendering ---
+    // Only render the mesh if active and texture is loaded
+    return isActive && texture ? (
+        <mesh ref={meshRef} /* Position/Scale managed by useFrame */>
+            <planeGeometry args={[1, 1]} />
+            <meshBasicMaterial map={texture} transparent={true} side={THREE.DoubleSide} depthWrite={false} />
+        </mesh>
+    ) : null; // Return null if not active or texture not ready
+}
