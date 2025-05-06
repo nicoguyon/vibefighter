@@ -101,6 +101,10 @@ interface BattleStateContextProps {
     setPlayer1Health: React.Dispatch<React.SetStateAction<number>>;
     player2Health: number;
     setPlayer2Health: React.Dispatch<React.SetStateAction<number>>;
+    player1Energy: number;
+    setPlayer1Energy: React.Dispatch<React.SetStateAction<number>>;
+    player2Energy: number;
+    setPlayer2Energy: React.Dispatch<React.SetStateAction<number>>;
 }
 const BattleStateContext = React.createContext<BattleStateContextProps | undefined>(undefined);
 
@@ -182,6 +186,7 @@ interface SceneContentProps {
     player1Health: number;
     player2Health: number;
     isPaused: boolean;
+    maxEnergy: number;
 }
 
 // --- SceneContent Component (Wrapped with memo) ---
@@ -200,13 +205,21 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
     player1Health,
     player2Health,
     isPaused,
+    maxEnergy,
 }: SceneContentProps) {
     const player1Ref = useRef<PlayerCharacterHandle>(null);
     const player2Ref = useRef<PlayerCharacterHandle>(null);
     const aiInputRef = useRef<InputState>({ left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false });
     const controlsRef = useRef<any>(null);
     const { scene, camera } = useThree();
-    const { setPlayer1Health, setPlayer2Health } = useBattleState();
+    const { 
+        setPlayer1Health, 
+        setPlayer2Health, 
+        player1Energy,
+        setPlayer1Energy,
+        player2Energy,
+        setPlayer2Energy
+    } = useBattleState();
 
     // --- State ---
     const dynamicRotationHasRun = useRef(false);
@@ -356,6 +369,17 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
             return;
         }
 
+        // --- ADDED: Update energy states from player refs ---
+        if (player1Ref.current) {
+            const p1EnergyVal = player1Ref.current.getCurrentEnergy();
+            setPlayer1Energy(p1EnergyVal);
+        }
+        if (player2Ref.current) {
+            const p2EnergyVal = player2Ref.current.getCurrentEnergy();
+            setPlayer2Energy(p2EnergyVal);
+        }
+        // --- END ADDED ---
+
         const p1Group = player1Ref.current?.getMainGroup();
         const p2Group = player2Ref.current?.getMainGroup();
 
@@ -475,6 +499,9 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
                                 const opponentBlocking = opponentRef?.isBlocking() ?? false;
                                 const damage = opponentBlocking ? 100 * 0.2 : 100; // Apply special damage amounts
 
+                                // --- Trigger Hit Flicker on Opponent --- 
+                                opponentRef?.triggerHitFlicker(); // Call flicker on the hit character
+
                                 if (opponentPlayerIndex === 2) { // Hit Player 2
                                     setPlayer2Health(h => Math.max(0, h - damage));
                                 } else { // Hit Player 1
@@ -518,12 +545,14 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
 
                     if (p1AttackingPunchKick && distXHit < HIT_DISTANCE && p1CanDamage && playersLandedHit) {
                         const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                        p1.confirmHit();
+                        p1.confirmHit(); // Attacker confirms their hit (e.g., to stop their damage window)
+                        p2?.triggerHitFlicker(); // Trigger flicker on Player 2 (the one hit)
                         setPlayer2Health(h => Math.max(0, h - damage));
                     }
                     if (p2AttackingPunchKick && distXHit < HIT_DISTANCE && p2CanDamage && playersLandedHit) {
                         const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
-                        p2.confirmHit();
+                        p2.confirmHit(); // Attacker confirms their hit
+                        p1?.triggerHitFlicker(); // Trigger flicker on Player 1 (the one hit)
                         setPlayer1Health(h => Math.max(0, h - damage));
                     }
                 }
@@ -720,9 +749,20 @@ export function BattleScene({
     const fightStartTriggeredRef = useRef(false);
     const [restartCounter, setRestartCounter] = useState(0);
     const gameOverMenuTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-    const battleStateValue = { player1Health, setPlayer1Health, player2Health, setPlayer2Health };
     const router = useRouter();
+
+    // --- ADDED: Energy States & Max Energy Constant ---
+    const MAX_ENERGY_BATTLESCENE = 100; // Must match PlayerCharacter's MAX_ENERGY
+    const [player1Energy, setPlayer1Energy] = useState(MAX_ENERGY_BATTLESCENE);
+    const [player2Energy, setPlayer2Energy] = useState(MAX_ENERGY_BATTLESCENE);
+    // --- END ADDED ---
+
+    const battleStateValue: BattleStateContextProps = {
+        player1Health, setPlayer1Health, 
+        player2Health, setPlayer2Health,
+        player1Energy, setPlayer1Energy,
+        player2Energy, setPlayer2Energy
+    };
 
     // --- Effect to Reset State on Restart ---
     useEffect(() => {
@@ -741,6 +781,8 @@ export function BattleScene({
             setIsPaused(false);
             setShowPauseMenu(false);
             fightStartTriggeredRef.current = false;
+            setPlayer1Energy(MAX_ENERGY_BATTLESCENE);
+            setPlayer2Energy(MAX_ENERGY_BATTLESCENE);
         }
     }, [restartCounter]);
 
@@ -871,41 +913,20 @@ export function BattleScene({
                              soundDelayTimer = setTimeout(playWinsAndStartTimer, 300);
                         };
                         nameAudio.onerror = (e) => {
-                             console.error(`[BattleScene] Error loading/playing winner name audio (${winnerAudioUrl}):`, e);
-                             playWinsAndStartTimer();
+                             console.error(`[BattleScene] Error loading winner name audio:`, e);
                         };
-                        nameAudio.play().catch(error => {
-                             console.error(`[BattleScene] Error initiating winner name audio playback (${winnerAudioUrl}):`, error);
-                             playWinsAndStartTimer();
-                        });
                      } catch (error) {
-                         console.error(`[BattleScene] Error creating Audio object for winner name (${winnerAudioUrl}):`, error);
-                         playWinsAndStartTimer();
+                         console.error(`[BattleScene] Error creating Audio object for winner name:`, error);
                      }
-                 } else {
-                     console.warn(`[BattleScene] No name audio URL found for winner: ${winnerName}. Playing wins sound directly.`);
-                     playWinsAndStartTimer();
                  }
-                 break;
-             case 'LOADING':
-                 setIsAIEnabled(false);
-                 fightStartTriggeredRef.current = false;
-                 setShowReadyText(false);
-                 setShowFightText(false);
-                 setP1IntroAnim(null);
-                 setP2IntroAnim(null);
-                 break;
+                break;
         }
-        return () => {
-             console.log("[BattleScene] Cleanup: Clearing timers for phase:", fightPhase);
-             if (phaseTimer) clearTimeout(phaseTimer);
-             if (soundDelayTimer) clearTimeout(soundDelayTimer);
-             if (gameOverMenuTimerRef.current) {
-                 clearTimeout(gameOverMenuTimerRef.current);
-                 gameOverMenuTimerRef.current = null;
-                 console.log("[BattleScene] Cleanup: Cleared GAME_OVER menu timer.");
-             }
-        }
+
+        if (gameOverMenuTimerRef.current) {
+             clearTimeout(gameOverMenuTimerRef.current);
+             gameOverMenuTimerRef.current = null;
+             console.log("[BattleScene] Cleanup: Cleared GAME_OVER menu timer.");
+         }
     }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl, isPaused]);
 
     // --- Effect to check for Game Over ---
@@ -979,6 +1000,7 @@ export function BattleScene({
                         player1Health={player1Health}
                         player2Health={player2Health}
                         isPaused={isPaused}
+                        maxEnergy={MAX_ENERGY_BATTLESCENE}
                     />
                 </Canvas>
 
@@ -989,8 +1011,8 @@ export function BattleScene({
                      zIndex: 2, display: 'flex', justifyContent: 'space-between',
                      alignItems: 'flex-start'
                  }}>
-                    <HealthBar name={player1Name} currentHealth={player1Health} maxHealth={MAX_HEALTH} alignment="left" style={{ position: 'relative' }} />
-                    <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} />
+                    <HealthBar name={player1Name} currentHealth={player1Health} maxHealth={MAX_HEALTH} alignment="left" style={{ position: 'relative' }} currentEnergy={player1Energy} maxEnergy={MAX_ENERGY_BATTLESCENE} />
+                    <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} currentEnergy={player2Energy} maxEnergy={MAX_ENERGY_BATTLESCENE} />
                 </div>
 
                  {/* --- Ready/Fight Text Overlay --- */}
@@ -1053,3 +1075,6 @@ const pauseButtonStyle: React.CSSProperties = {
     textAlign: 'center',
     transition: 'background-color 0.2s, color 0.2s',
 }; 
+
+// --- REMOVED: Redundant constant declaration (already passed as prop) ---
+// const MAX_ENERGY_SCENECONTENT = 100; 

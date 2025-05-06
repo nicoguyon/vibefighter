@@ -78,6 +78,8 @@ export interface PlayerCharacterHandle {
     // --- Add Projectile Methods ---
     getProjectileState: () => { active: boolean; position: THREE.Vector3 | null };
     deactivateProjectile: () => void;
+    triggerHitFlicker: () => void; // <-- Add method to handle
+    getCurrentEnergy: () => number; // <-- ADDED: Get current energy
 }
 
 interface PlayerCharacterProps {
@@ -106,6 +108,12 @@ interface AnimationFinishedEvent extends THREE.Event {
 
 // --- ADD Projectile Status Type ---
 type SpecialPowerStatus = 'idle' | 'growing' | 'throwing' | 'hit';
+
+// --- ADDED: Energy Constants ---
+const MAX_ENERGY = 100;
+const ENERGY_COST_SPECIAL_THROW = 50;
+const ENERGY_REGEN_PER_SECOND = MAX_ENERGY / 30; // Full charge in 30 seconds
+// --- END ADDED --- 
 
 // --- Projectile Constants (copied from editor) ---
 // Comment out constants relying on external imports for now
@@ -296,6 +304,16 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         const winnerRotationComplete = useRef(false);
         const victoryAnimPlayed = useRef(false); // To ensure anim plays only once
 
+        // --- HIT FLICKER STATE AND REFS ---
+        const [isHitFlickering, setIsHitFlickering] = useState(false);
+        const hitFlickerTimerRef = useRef<NodeJS.Timeout | null>(null);
+        const originalMaterialEmissiveMapRef = useRef<Map<THREE.Material, { emissive: THREE.Color, emissiveIntensity: number }>>(new Map());
+
+        // --- ADDED: Energy State and Refs ---
+        const currentEnergyRef = useRef(MAX_ENERGY);
+        const lastEnergyUpdateTimeRef = useRef(performance.now());
+        // --- END ADDED ---
+
         // --- ADD Projectile State ---
         // const [specialImageUrl, setSpecialImageUrl] = useState<string | null>(null); // <-- Remove state
         const [specialImageTexture, setSpecialImageTexture] = useState<Texture | null>(null);
@@ -318,10 +336,42 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             console.log(`[PlayerCharacter ${initialFacing}] initialPosition prop updated:`, initialPosition);
             positionRef.current.set(...initialPosition);
             console.log(`[PlayerCharacter ${initialFacing}] positionRef updated to:`, positionRef.current);
-            // Reset ground/velocity state when position changes drastically (like on navigation)
-            hasHitGround.current = false;
-            manualVelocityRef.current = { x: 0, y: 0, z: 0 };
+            hasHitGround.current = false; // Reset ground state
+            manualVelocityRef.current = { x: 0, y: 0, z: 0 }; // Reset velocity
         }, [initialPosition]);
+
+        // --- triggerHitFlickerInternal function (defined within component scope) ---
+        const triggerHitFlickerInternal = useCallback(() => {
+            if (hitFlickerTimerRef.current) {
+                clearTimeout(hitFlickerTimerRef.current);
+            }
+
+            // Only capture originals if not already flickering and model wrapper is available.
+            if (!isHitFlickering && modelWrapperRef.current) {
+                originalMaterialEmissiveMapRef.current.clear(); 
+                modelWrapperRef.current.traverse((child) => {
+                    if (child instanceof THREE.SkinnedMesh && child.material) {
+                        const materials = Array.isArray(child.material) ? child.material : [child.material];
+                        materials.forEach(mat => {
+                            const material = mat as THREE.MeshStandardMaterial;
+                            if (material.isMeshStandardMaterial && !originalMaterialEmissiveMapRef.current.has(material)) {
+                                originalMaterialEmissiveMapRef.current.set(material, {
+                                    emissive: material.emissive.clone(),
+                                    emissiveIntensity: material.emissiveIntensity
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            
+            setIsHitFlickering(true); 
+
+            hitFlickerTimerRef.current = setTimeout(() => {
+                setIsHitFlickering(false);
+                hitFlickerTimerRef.current = null;
+            }, 150); // Flicker duration 150ms
+        }, [isHitFlickering]); // isHitFlickering ensures correct original capture logic
 
         // --- useImperativeHandle ---
         useImperativeHandle(ref, () => ({ 
@@ -340,16 +390,14 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             getHasHitGround: () => hasHitGround.current,
             isAttacking: () => isAttackingRef.current,
             isDucking: () => isDuckingRef.current,
-            isPerformingSpecialAttack: () => isSpecialAttackRef.current, // <-- Add function to handle
-            confirmHit: () => {
+            isPerformingSpecialAttack: () => isSpecialAttackRef.current,
+            confirmHit: () => { // For attacker to confirm their hit window. Does NOT trigger flicker on self.
                 canDamageRef.current = false;
             },
             getCanDamage: () => canDamageRef.current,
             isBlocking: () => isBlockingRef.current,
-            // --- Implement Projectile Methods ---
             getProjectileState: () => {
                 if (specialPowerActive && projectileMeshRef.current) {
-                    // Ensure world matrix is up-to-date before getting world position
                     projectileMeshRef.current.updateWorldMatrix(true, false);
                     const worldPosition = new THREE.Vector3();
                     projectileMeshRef.current.getWorldPosition(worldPosition);
@@ -362,16 +410,17 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 console.log(`[PlayerCharacter ${initialFacing}] Deactivating projectile externally.`);
                 setSpecialPowerActive(false);
                 setSpecialPowerStatus('idle');
-                // Clear userData timers if they exist
                 if (projectileMeshRef.current) {
                     projectileMeshRef.current.userData.startTime = null;
                     projectileMeshRef.current.userData.throwStartTime = null;
                 }
-            }
+            },
+            triggerHitFlicker: triggerHitFlickerInternal, // Expose the memoized function for BattleScene to call on the target
+            getCurrentEnergy: () => currentEnergyRef.current // <-- ADDED: Expose current energy
         }), [
-            // Add state setters used by deactivateProjectile
             isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef, isSpecialAttackRef, 
-            setSpecialPowerActive, setSpecialPowerStatus 
+            setSpecialPowerActive, setSpecialPowerStatus, 
+            triggerHitFlickerInternal, currentEnergyRef // Add triggerHitFlickerInternal and currentEnergyRef to dependencies
         ]);
 
         // --- State ---
@@ -777,6 +826,14 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
            console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] ==> Attempting triggerSpecialPowerThrow`);
             const currentSkeleton = skeletonRef.current;
             const wrapper = modelWrapperRef.current; // Get wrapper ref
+
+            // --- ADDED: Energy Check --- 
+            if (currentEnergyRef.current < ENERGY_COST_SPECIAL_THROW) {
+                console.warn(`[PlayerCharacter ${initialFacing} ${playerIndex}] triggerSpecialPowerThrow: Not enough energy. Have ${currentEnergyRef.current}, Need ${ENERGY_COST_SPECIAL_THROW}`);
+                return;
+            }
+            // --- END ADDED ---
+
             // Check prerequisites including the new prop
             if (!mixer || !currentSkeleton || !initialPose || !wrapper || isActionInProgress.current || isBlockingRef.current || !specialImageUrlProp || !onLaunchProjectile) {
                 console.warn(`[PlayerCharacter ${initialFacing} ${playerIndex}] triggerSpecialPowerThrow: Prerequisites missing or action blocked.`, {
@@ -851,6 +908,11 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             if (launchPosWorld) {
                  console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] Calling onLaunchProjectile...`);
                  onLaunchProjectile(launchPosWorld, directionX, specialImageUrlProp, playerIndex); // <-- Pass playerIndex
+                 // --- ADDED: Consume Energy ---
+                 currentEnergyRef.current -= ENERGY_COST_SPECIAL_THROW;
+                 lastEnergyUpdateTimeRef.current = performance.now(); // Reset timer to prevent immediate full regen after use
+                 console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] Special throw performed. Energy consumed. Remaining: ${currentEnergyRef.current}`);
+                 // --- END ADDED ---
             } else {
                  console.error(`[PlayerCharacter ${initialFacing} ${playerIndex}] Could not determine launch position! Projectile callback not called.`);
                  // Reset flags if launch calculation fails, even if animation plays
@@ -862,7 +924,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             }
 
        }, [ // Add onLaunchProjectile to dependencies
-           actions, mixer, initialPose, initialFacing, specialImageUrlProp, onLaunchProjectile, modelWrapperRef, groupRef // Added groupRef dependency
+           actions, mixer, initialPose, initialFacing, specialImageUrlProp, onLaunchProjectile, modelWrapperRef, groupRef, currentEnergyRef, lastEnergyUpdateTimeRef // Added groupRef dependency
        ]);
 
         // --- END MOVED DEFINITIONS ---
@@ -1235,6 +1297,44 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
             const group = groupRef.current;
             const modelWrapper = modelWrapperRef.current;
             if (!group || !isLoaded || !modelWrapper) return;
+
+            // --- ADDED: Energy Regeneration (before phase-specific logic, but after pause check) ---
+            const nowForEnergy = performance.now();
+            const energyDeltaTime = (nowForEnergy - lastEnergyUpdateTimeRef.current) / 1000; // in seconds
+            if (currentEnergyRef.current < MAX_ENERGY && energyDeltaTime > 0) {
+                const energyToRegen = ENERGY_REGEN_PER_SECOND * energyDeltaTime;
+                currentEnergyRef.current = Math.min(MAX_ENERGY, currentEnergyRef.current + energyToRegen);
+                // console.log(`[PlayerCharacter ${initialFacing}] Energy Regen: DeltaTime=${energyDeltaTime.toFixed(3)}s, RegenAmount=${energyToRegen.toFixed(3)}, NewEnergy=${currentEnergyRef.current.toFixed(2)}`);
+            }
+            lastEnergyUpdateTimeRef.current = nowForEnergy; // Always update for next frame calculation
+            // --- END ADDED ---
+
+            // --- Material Flicker Logic ---
+            // Placed after model loaded checks and before any phase-specific early returns in useFrame.
+            modelWrapper.traverse((child) => {
+                if (child instanceof THREE.SkinnedMesh && child.material) {
+                    const materials = Array.isArray(child.material) ? child.material : [child.material];
+                    materials.forEach(mat => {
+                        const material = mat as THREE.MeshStandardMaterial;
+                        if (!material.isMeshStandardMaterial) return;
+
+                        if (isHitFlickering) {
+                            material.emissive.setHex(0xcccccc); // Use a very light gray for emissive flicker
+                            material.emissiveIntensity = 0.1;   // Adjust intensity for a softer effect
+                        } else {
+                            const originalProps = originalMaterialEmissiveMapRef.current.get(material);
+                            if (originalProps) {
+                                material.emissive.copy(originalProps.emissive);
+                                material.emissiveIntensity = originalProps.emissiveIntensity;
+                            } else {
+                                material.emissive.setHex(0x000000);
+                                material.emissiveIntensity = 0;
+                            }
+                        }
+                        material.needsUpdate = true;
+                    });
+                }
+            });
 
             // --- [PRIORITY 1] Handle GAME OVER States ---
             if (fightPhase === 'GAME_OVER') {

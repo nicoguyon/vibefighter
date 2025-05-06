@@ -4,6 +4,8 @@ interface HealthBarProps {
     name: string;
     currentHealth: number;
     maxHealth: number;
+    currentEnergy: number;
+    maxEnergy: number;
     alignment: 'left' | 'right'; // To flip text alignment if needed
     style?: React.CSSProperties;
 }
@@ -12,10 +14,13 @@ const HealthBar: React.FC<HealthBarProps> = ({
     name,
     currentHealth,
     maxHealth,
+    currentEnergy,
+    maxEnergy,
     alignment,
     style,
 }) => {
     const healthPercentage = Math.max(0, (currentHealth / maxHealth) * 100);
+    const energyPercentage = Math.max(0, (currentEnergy / maxEnergy) * 100);
 
     // Basic styling - apply external style prop here
     const barStyle: React.CSSProperties = {
@@ -54,11 +59,30 @@ const HealthBar: React.FC<HealthBarProps> = ({
         borderRadius: '2px 0 0 2px',
     };
 
+    const energyBarContainerStyle: React.CSSProperties = {
+        height: '10px', // Thinner than health bar
+        backgroundColor: '#6c757d', // Dark gray background for energy
+        borderRadius: '3px',
+        overflow: 'hidden',
+        border: '1px solid #333',
+        marginTop: '5px', // Space between health and energy bar
+    };
+
+    const energyFillStyle: React.CSSProperties = {
+        width: `${energyPercentage}%`,
+        height: '100%',
+        backgroundColor: '#ffc107', // Yellow for energy
+        borderRadius: '2px 0 0 2px',
+    };
+
     return (
         <div style={barStyle}>
             <div style={nameStyle}>{name}</div>
             <div style={barContainerStyle}>
                 <div style={healthFillStyle}></div>
+            </div>
+            <div style={energyBarContainerStyle}>
+                <div style={energyFillStyle}></div>
             </div>
         </div>
     );
