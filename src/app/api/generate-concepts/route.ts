@@ -9,9 +9,12 @@ if (!process.env.CIVITAI_API_TOKEN) {
     console.warn('Missing CIVITAI_API_TOKEN environment variable. Lora downloads might fail if model is private.');
 }
 
+
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN,
 });
+
+const loraWeights = process.env.LORA_LINK;
 
 // Define the expected input structure
 interface RequestBody {
@@ -53,7 +56,7 @@ export async function POST(req: NextRequest) {
         num_outputs: 2,
         aspect_ratio: "9:16", // Vertical aspect ratio, good for characters
         // Ensure the Civitai token is appended if available
-        lora_weights: `https://civitai.com/api/download/models/738680?type=Model&format=SafeTensor${process.env.CIVITAI_API_TOKEN ? '&token=' + process.env.CIVITAI_API_TOKEN : ''}`,
+        lora_weights: loraWeights,
         output_format: "jpg", // Using jpg as requested
         output_quality: 80,
         prompt_strength: 0.8,

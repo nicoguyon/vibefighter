@@ -749,6 +749,7 @@ export function BattleScene({
     const fightStartTriggeredRef = useRef(false);
     const [restartCounter, setRestartCounter] = useState(0);
     const gameOverMenuTimerRef = useRef<NodeJS.Timeout | null>(null);
+    const gameOverSequenceInitiatedRef = useRef(false);
     const router = useRouter();
 
     // --- ADDED: Energy States & Max Energy Constant ---
@@ -756,6 +757,16 @@ export function BattleScene({
     const [player1Energy, setPlayer1Energy] = useState(MAX_ENERGY_BATTLESCENE);
     const [player2Energy, setPlayer2Energy] = useState(MAX_ENERGY_BATTLESCENE);
     // --- END ADDED ---
+
+    // --- DIAGNOSTIC useEffects ---
+    useEffect(() => {
+        console.log(`[BattleScene Diagnostics] showPauseMenu state is NOW: ${showPauseMenu}`);
+    }, [showPauseMenu]);
+
+    useEffect(() => {
+        console.log(`[BattleScene Diagnostics] isPaused state is NOW: ${isPaused}`);
+    }, [isPaused]);
+    // --- END DIAGNOSTIC useEffects ---
 
     const battleStateValue: BattleStateContextProps = {
         player1Health, setPlayer1Health, 
@@ -781,6 +792,7 @@ export function BattleScene({
             setIsPaused(false);
             setShowPauseMenu(false);
             fightStartTriggeredRef.current = false;
+            gameOverSequenceInitiatedRef.current = false;
             setPlayer1Energy(MAX_ENERGY_BATTLESCENE);
             setPlayer2Energy(MAX_ENERGY_BATTLESCENE);
         }
@@ -818,10 +830,16 @@ export function BattleScene({
 
     // --- Effect to manage Fight Phase transitions & Play Sounds --- //
     useEffect(() => {
-        if (isPaused) {
+        if (isPaused && fightPhase !== 'GAME_OVER') {
             console.log(`[BattleScene Phase Effect] Paused. Skipping transition for phase ${fightPhase}.`);
             return;
         }
+
+        if (fightPhase !== 'GAME_OVER' && gameOverSequenceInitiatedRef.current) {
+            console.log('[BattleScene Phase Effect] Exited GAME_OVER, resetting gameOverSequenceInitiatedRef.');
+            gameOverSequenceInitiatedRef.current = false;
+        }
+
         console.log(`[BattleScene] Fight Phase Changed: ${fightPhase}`);
         let phaseTimer: NodeJS.Timeout | undefined;
         let soundDelayTimer: NodeJS.Timeout | undefined;
@@ -884,54 +902,82 @@ export function BattleScene({
                 }
                 break;
              case 'GAME_OVER':
-                 setIsAIEnabled(false);
-                 setShowReadyText(false);
-                 setShowFightText(false);
-                 setShowWinnerBanner(true);
-                 const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
-                 let winsSoundPlayed = false;
-                 const playWinsAndStartTimer = () => {
-                     if (winsSoundPlayed) return;
-                     winsSoundPlayed = true;
-                     console.log("[BattleScene GAME_OVER] Playing wins sound.");
-                     playSound(winsSoundUrl);
-                     console.log("[BattleScene GAME_OVER] Starting 5s timer to show Game Over menu.");
-                     gameOverMenuTimerRef.current = setTimeout(() => {
-                         if (fightPhase === 'GAME_OVER' && !isPaused) {
-                             console.log("[BattleScene GAME_OVER] 5s timer finished. Showing Game Over menu.");
-                             setIsPaused(true);
-                             setShowPauseMenu(true);
-                         }
-                         gameOverMenuTimerRef.current = null;
-                     }, 5000);
-                 };
-                 if (winnerAudioUrl) {
-                     try {
-                        const nameAudio = new Audio(winnerAudioUrl);
-                        nameAudio.onended = () => {
-                             console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Starting wins sequence.`);
-                             soundDelayTimer = setTimeout(playWinsAndStartTimer, 300);
-                        };
-                        nameAudio.onerror = (e) => {
-                             console.error(`[BattleScene] Error loading winner name audio:`, e);
-                        };
-                     } catch (error) {
-                         console.error(`[BattleScene] Error creating Audio object for winner name:`, error);
-                     }
+                 // Log entry and the ref state
+                console.log(`[BattleScene GAME_OVER Check] Current fightPhase: ${fightPhase}, gameOverSequenceInitiatedRef: ${gameOverSequenceInitiatedRef.current}, winnerName: ${winnerName}`);
+
+                 if (!gameOverSequenceInitiatedRef.current) {
+                    console.log('[BattleScene GAME_OVER] Initiating game over sequence (gameOverSequenceInitiatedRef was false).');
+                    gameOverSequenceInitiatedRef.current = true;
+
+                    setIsAIEnabled(false);
+                    setShowReadyText(false);
+                    setShowFightText(false);
+                    setShowWinnerBanner(true);
+                    const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
+                    let winsSoundPlayed = false;
+                    const playWinsAndStartTimer = () => {
+                        // Log entry to this function and winsSoundPlayed state
+                        console.log(`[BattleScene playWinsAndStartTimer] Entered. winsSoundPlayed: ${winsSoundPlayed}`);
+                        if (winsSoundPlayed) {
+                            console.log(`[BattleScene playWinsAndStartTimer] Exiting because winsSoundPlayed is true.`);
+                            return;
+                        }
+                        winsSoundPlayed = true;
+                        console.log("[BattleScene GAME_OVER] Playing wins sound.");
+                        playSound(winsSoundUrl);
+                        console.log("[BattleScene GAME_OVER] Preparing to set 5s timer for Game Over menu.");
+                        if (gameOverMenuTimerRef.current) {
+                            clearTimeout(gameOverMenuTimerRef.current);
+                            console.log("[BattleScene GAME_OVER] Cleared existing gameOverMenuTimerRef.");
+                        }
+                        gameOverMenuTimerRef.current = setTimeout(() => {
+                            // Log entry to timeout callback and current fightPhase
+                            console.log(`[BattleScene GAME_OVER Timer Callback] Entered. Current fightPhase: ${fightPhase}. Menu should appear now.`);
+                            if (fightPhase === 'GAME_OVER') { // Check the fightPhase *at the time of execution*
+                                console.log("[BattleScene GAME_OVER Timer Callback] Condition met (fightPhase is GAME_OVER). Setting isPaused and showPauseMenu to true.");
+                                setIsPaused(true);
+                                setShowPauseMenu(true);
+                            } else {
+                                console.log(`[BattleScene GAME_OVER Timer Callback] Condition NOT met. fightPhase is now: ${fightPhase}. Menu will NOT appear.`);
+                            }
+                            gameOverMenuTimerRef.current = null; // Clear the ref
+                        }, 5000);
+                        console.log("[BattleScene GAME_OVER] 5s timer for Game Over menu SET.");
+                    };
+
+                    if (winnerAudioUrl) {
+                        try {
+                            const nameAudio = new Audio(winnerAudioUrl);
+                            nameAudio.onended = () => {
+                                console.log(`[BattleScene] Winner name audio finished for ${winnerName}. Starting wins sequence.`);
+                                soundDelayTimer = setTimeout(playWinsAndStartTimer, 300);
+                            };
+                            nameAudio.onerror = (e) => {
+                                console.error(`[BattleScene] Error loading winner name audio:`, e);
+                                playWinsAndStartTimer(); // Call directly on error
+                            };
+                            // Ensure audio actually tries to play
+                            nameAudio.play().catch(error => {
+                                console.error(`[BattleScene] Error playing winner name audio directly:`, error);
+                                playWinsAndStartTimer(); // Call directly if play() fails
+                            });
+                        } catch (error) {
+                            console.error(`[BattleScene] Error creating Audio object for winner name:`, error);
+                            playWinsAndStartTimer(); // Call directly on error
+                        }
+                    } else {
+                        console.log("[BattleScene GAME_OVER] winnerAudioUrl is null, calling playWinsAndStartTimer directly.");
+                        playWinsAndStartTimer(); // Call directly if no winner audio URL
+                    }
+                 } else {
+                    console.log('[BattleScene GAME_OVER] Skipped game over sequence because gameOverSequenceInitiatedRef was true.');
                  }
                 break;
         }
-
-        if (gameOverMenuTimerRef.current) {
-             clearTimeout(gameOverMenuTimerRef.current);
-             gameOverMenuTimerRef.current = null;
-             console.log("[BattleScene] Cleanup: Cleared GAME_OVER menu timer.");
-         }
     }, [fightPhase, player1NameAudioUrl, player2NameAudioUrl, versusSoundUrl, readySoundUrl, fightSoundUrl, onSceneVisible, winnerName, player1Name, player2Name, winsSoundUrl, isPaused]);
 
     // --- Effect to check for Game Over ---
     useEffect(() => {
-        if (isPaused) return;
         if (fightPhase === 'FIGHT') {
             let determinedWinner: string | null = null;
             if (player1Health <= 0) {
@@ -939,13 +985,35 @@ export function BattleScene({
             } else if (player2Health <= 0) {
                 determinedWinner = player1Name;
             }
+
             if (determinedWinner) {
                 console.log(`[BattleScene] Game Over! Winner: ${determinedWinner}`);
+                // If a winner is determined while in FIGHT phase, set them and transition to GAME_OVER.
                 setWinnerName(determinedWinner);
                 setFightPhase('GAME_OVER');
             }
         }
-    }, [player1Health, player2Health, fightPhase, player1Name, player2Name, isPaused]);
+        // Optional: Handle if fightPhase is already GAME_OVER but winnerName might need an update,
+        // for instance, if winnerName was null when the phase transitioned.
+        else if (fightPhase === 'GAME_OVER' && winnerName === null) {
+            let potentialWinner: string | null = null;
+            // Check health conditions to determine a winner if not already set
+            if (player1Health <= 0 && player2Health > 0) {
+                potentialWinner = player2Name;
+            } else if (player2Health <= 0 && player1Health > 0) {
+                potentialWinner = player1Name;
+            } else if (player1Health <= 0 && player2Health <= 0) {
+                // Both players at 0 health, and no winner recorded. This could be a draw.
+                // Specific game logic for draws would be needed here. For now, log it.
+                console.log("[BattleScene] GAME_OVER with null winnerName and both players at 0 health. Possible draw?");
+            }
+
+            if (potentialWinner) {
+                console.log(`[BattleScene] Setting winner in GAME_OVER phase as name was null: ${potentialWinner}`);
+                setWinnerName(potentialWinner);
+            }
+        }
+    }, [player1Health, player2Health, fightPhase, player1Name, player2Name, winnerName]); // Removed isPaused from dependencies
 
     // --- Pause Menu Handlers ---
     const handleResume = () => {

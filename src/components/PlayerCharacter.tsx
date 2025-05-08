@@ -407,7 +407,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 }
             },
             deactivateProjectile: () => {
-                console.log(`[PlayerCharacter ${initialFacing}] Deactivating projectile externally.`);
+                
                 setSpecialPowerActive(false);
                 setSpecialPowerStatus('idle');
                 if (projectileMeshRef.current) {
@@ -480,7 +480,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: true })); break;
                  case ' ':
                      if (event.shiftKey) {
-                         console.log(`[PlayerCharacter ${initialFacing} KeyDown] Shift + Space detected! Setting special: true`); // Log special input
+                         
                          setPressedKeys(prev => ({ ...prev, special: true }));
                      } else {
                          setPressedKeys(prev => ({ ...prev, punch: true }));
@@ -497,7 +497,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  case 'ArrowRight': setPressedKeys(prev => ({ ...prev, right: false })); break;
                  case 'ArrowDown': setPressedKeys(prev => ({ ...prev, duck: false })); break;
                  case ' ':
-                    console.log(`[PlayerCharacter ${initialFacing} KeyUp] Space released. Setting special: false, punch: false`); // Log key up
+                    
                     setPressedKeys(prev => ({ ...prev, punch: false, special: false }));
                     break;
                  case 'b': setPressedKeys(prev => ({ ...prev, block: false })); break;
@@ -585,7 +585,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  return;
              }
 
-             console.log(`[PlayerCharacter ${initialFacing} Anims] Configuring actions.`);
+             
              if (actions?.WalkCycle) actions.WalkCycle.setLoop(THREE.LoopRepeat, Infinity);
              if (actions?.GoToFightStance) { actions.GoToFightStance.setLoop(THREE.LoopOnce, 1); actions.GoToFightStance.clampWhenFinished = true; }
              if (actions?.IdleBreath) actions.IdleBreath.setLoop(THREE.LoopRepeat, Infinity);
@@ -605,12 +605,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
              if (mixer) mixer.timeScale = 1;
 
-             console.log(`[PlayerCharacter ${initialFacing} Anims] Initial setup complete.`);
+             
              isInStance.current = false;
 
              // --- Signal Readiness --- 
              if (!isReadySignaled.current) {
-                 console.log(`[PlayerCharacter ${initialFacing}] Signaling Ready!`);
+                 
                  onCharacterReady(); // Call the passed callback
                  isReadySignaled.current = true;
              }
@@ -628,12 +628,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 // console.log(`[PlayerCharacter ${initialFacing}] Duck trigger ignored: Already ducking or action in progress.`);
                  return;
             }
-             console.log(`[PlayerCharacter ${initialFacing}] Triggering Duck`);
+             
             isActionInProgress.current = true;
             isDuckingRef.current = true;
 
             // --- FORCE STOP other actions instead of fading ---
-            console.log(`[PlayerCharacter ${initialFacing}] Stopping potentially active actions before ducking.`);
+           
             mixer.stopAllAction(); // Stop everything first
             // actions.IdleBreath?.fadeOut(0.1);
             // actions.WalkCycle?.fadeOut(0.1);

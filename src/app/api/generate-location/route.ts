@@ -38,6 +38,9 @@ const S3 = new S3Client({
     },
 });
 
+
+const loraWeights = process.env.LORA_LINK;
+
 // --- Interfaces ---
 interface RequestBody { userPrompt: string; }
 interface ReplicateFileOutput { url: () => { href: string }; } // Updated based on previous findings
@@ -80,7 +83,7 @@ export async function POST(req: NextRequest) {
             prompt: `a background for a video game of ${userPrompt}, ningraphix style`,
             go_fast: false, guidance: 3, lora_scale: 0.9, megapixels: "1",
             num_outputs: 1, aspect_ratio: "21:9",
-            lora_weights: `https://civitai.com/api/download/models/738680?type=Model&format=SafeTensor${process.env.CIVITAI_API_TOKEN ? '&token=' + process.env.CIVITAI_API_TOKEN : ''}`,
+            lora_weights: loraWeights,
             output_format: "jpg", output_quality: 80, prompt_strength: 0.8,
             num_inference_steps: 28
         };
