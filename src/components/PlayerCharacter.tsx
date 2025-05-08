@@ -1241,48 +1241,6 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
          }, [fightPhase, currentHealth, mixer, initialFacing]); // Minimal dependencies
 
 
-        // --- Guarded Action Trigger Effect --- 
-        useEffect(() => {
-            // *** CRUCIAL: Only allow triggering actions during FIGHT phase ***
-            if (fightPhase !== 'FIGHT') {
-                return;
-            }
-            // Existing checks for canFight and actions are still relevant
-            if (!canFight || !actions) {
-                return;
-            }
-
-            const currentInput = getEffectiveInputState();
-            const shouldBeBlocking = currentInput.block;
-            const shouldBeDucking = currentInput.duck;
-
-            // Log state before checks
-            console.log(`[PlayerCharacter ${initialFacing} Action Trigger] Input:`, currentInput, `ActionInProgress: ${isActionInProgress.current}, ShouldBlock: ${shouldBeBlocking}`);
-
-            // Priority: Special > Block/Duck > Punch/Kick > Stand/Idle
-            if (currentInput.special && !isActionInProgress.current && !shouldBeBlocking) {
-                console.log(`[PlayerCharacter ${initialFacing} Action Trigger] Conditions MET for Special Power Throw.`); // Log trigger
-                triggerSpecialPowerThrow();
-            } else if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
-                triggerBlock();
-            } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
-                stopBlock();
-            } else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
-                triggerDuck();
-            } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
-                triggerStandUp();
-            } else if (currentInput.punch && !isActionInProgress.current && !shouldBeBlocking) { // Only punch if not blocking
-                if (isDuckingRef.current && actions?.DuckKick) { // Check DuckKick action exists
-                    triggerKick();
-                } else if (!isDuckingRef.current) {
-                    triggerPunch();
-                }
-            }
-
-        }, [actions, isInStance, isActionInProgress, getEffectiveInputState, canFight, fightPhase, // Add fightPhase dependency
-            triggerBlock, stopBlock, triggerDuck, triggerStandUp, triggerKick, triggerPunch, triggerSpecialPowerThrow]); // Add helpers to dependencies
-
-
         // --- Frame Update ---
         useFrame((state, delta) => {
             // --- ADD THIS LOG ---
@@ -1413,172 +1371,205 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
 
             // --- [PRIORITY 3] FIGHT PHASE LOGIC (Physics, Movement, Standard Anims) ---
             // This block runs ONLY if fightPhase is FIGHT
-            // ***** Keep this block exactly as it was when movement worked *****
-            const currentPos = positionRef.current;
-            const velocity = manualVelocityRef.current;
-            const currentInput = getEffectiveInputState(); // Get input here for physics
-            let targetVelocityX = 0;
-            const isGrounded = hasHitGround.current && currentPos.y <= GROUND_LEVEL;
+            
+            if (fightPhase === 'FIGHT' && canFight && actions && isLoaded) {
+                const currentPos = positionRef.current;
+                const velocity = manualVelocityRef.current;
+                const currentInput = getEffectiveInputState(); // Get input here for physics & actions
+                let targetVelocityX = 0;
+                const isGrounded = hasHitGround.current && currentPos.y <= GROUND_LEVEL;
 
-            // Horizontal Movement
-            if (!isActionInProgress.current && isGrounded) { // Revert to simpler check maybe?
-                 if (currentInput.left || currentInput.right) {
-                    targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
-                 }
-            }
-             if (isGrounded) { velocity.x = targetVelocityX; }
+                // Horizontal Movement
+                if (!isActionInProgress.current && isGrounded) {
+                     if (currentInput.left || currentInput.right) {
+                        targetVelocityX = currentInput.left ? -CHARACTER_WALK_SPEED : CHARACTER_WALK_SPEED;
+                     }
+                }
+                 if (isGrounded) { velocity.x = targetVelocityX; }
 
-            // Vertical Movement (Jump & Gravity)
-            if (currentInput.jump && isGrounded && !isActionInProgress.current) {
-                velocity.y = JUMP_FORCE;
-                 if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
-                 else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
-                 else velocity.x = 0; // Keep jump X velocity setting
-            }
-            if (!isGrounded || velocity.y > 0) {
-                velocity.y -= GRAVITY * delta;
-            }
+                // Vertical Movement (Jump & Gravity)
+                if (currentInput.jump && isGrounded && !isActionInProgress.current) {
+                    velocity.y = JUMP_FORCE;
+                     if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
+                     else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
+                     else velocity.x = 0; // Keep jump X velocity setting
+                }
+                if (!isGrounded || velocity.y > 0) {
+                    velocity.y -= GRAVITY * delta;
+                }
 
-            // Boundary Checks
-            const nextX = currentPos.x + velocity.x * delta;
-            if (nextX <= MIN_X || nextX >= MAX_X) {
-                velocity.x = 0; // Stop horizontal movement if next step is out of bounds
-            }
+                // Boundary Checks
+                const nextX = currentPos.x + velocity.x * delta;
+                if (nextX <= MIN_X || nextX >= MAX_X) {
+                    velocity.x = 0; // Stop horizontal movement if next step is out of bounds
+                }
 
-            // Update Position
-            currentPos.x += velocity.x * delta;
-            currentPos.y += velocity.y * delta;
-            currentPos.z += velocity.z * delta;
+                // Update Position
+                currentPos.x += velocity.x * delta;
+                currentPos.y += velocity.y * delta;
+                currentPos.z += velocity.z * delta;
 
-            // Ground Collision / State Update
-            if (currentPos.y <= GROUND_LEVEL && velocity.y <= 0) {
-                 currentPos.y = GROUND_LEVEL;
-                 velocity.y = 0;
-                 if (!hasHitGround.current) { hasHitGround.current = true; }
-            }
-            group.position.copy(currentPos);
+                // Ground Collision / State Update
+                if (currentPos.y <= GROUND_LEVEL && velocity.y <= 0) {
+                     currentPos.y = GROUND_LEVEL;
+                     velocity.y = 0;
+                     if (!hasHitGround.current) { hasHitGround.current = true; }
+                }
+                group.position.copy(currentPos);
 
-            // --- Update Projectile State (Movement, Scale, Transitions) ---
-            if (specialPowerActive && specialImageTexture) {
-                const projectileMesh = projectileMeshRef.current; // Use the ref
-                if (projectileMesh) { // Check if mesh exists via ref
-                    const now = performance.now();
-                    const isFlipped = projectileIsFlipped;
+                // --- ACTION TRIGGERING LOGIC (MOVED FROM useEffect) ---
+                // This logic now uses `currentInput` already obtained in this useFrame scope.
+                if (actions) { // Ensure actions is still valid (redundant due to outer check, but safe)
+                    const shouldBeBlocking = currentInput.block;
+                    const shouldBeDucking = currentInput.duck;
+                    
+                    // Debug log for AI (can be commented out once stable)
+                    // if (!isPlayerControlled) {
+                    //      console.log(`[AI Char ${initialFacing} useFrame Action Check] Input: ${JSON.stringify(currentInput)}, InProgress: ${isActionInProgress.current}, Blocking: ${isBlockingRef.current}, Ducking: ${isDuckingRef.current}`);
+                    // }
 
-                    switch (specialPowerStatus) {
-                        case 'growing': {
-                            const activationTime = (projectileMesh.userData.startTime as number | undefined) ?? now;
-                            if (!projectileMesh.userData.startTime) projectileMesh.userData.startTime = activationTime;
-
-                            const growingElapsedTime = now - activationTime;
-                            // Start growth only after delay
-                            const effectiveElapsedTime = Math.max(0, growingElapsedTime - GROWTH_START_DELAY_MS);
-                            const growthProgress = Math.min(effectiveElapsedTime / GROWTH_DURATION_MS, 1);
-
-                            // Interpolate scale
-                            const startScale = 0.01;
-                            const targetScale = BASE_PLANE_SIZE;
-                            const currentScale = THREE.MathUtils.lerp(startScale, targetScale, growthProgress);
-                            const aspect = specialImageTexture.image ? specialImageTexture.image.width / specialImageTexture.image.height : 1;
-                            projectileMesh.scale.set(currentScale * aspect, currentScale, 1);
-
-                            // Log growth values
-                            // console.log(`[${initialFacing} Growth] Elapsed: ${growingElapsedTime.toFixed(0)}, EffElapsed: ${effectiveElapsedTime.toFixed(0)}, Progress: ${growthProgress.toFixed(2)}, Scale: ${currentScale.toFixed(3)}`);
-
-                            // Update position between hands continuously
-                            // ... (position logic remains the same) ...
-                             const lHand = skeletonRef.current?.bones.find(b => b.name === 'L_Hand');
-                             const rHand = skeletonRef.current?.bones.find(b => b.name === 'R_Hand');
-                             if (lHand && rHand && group) { // Ensure group exists
-                                 const worldPosL = lHand.getWorldPosition(new THREE.Vector3());
-                                 const worldPosR = rHand.getWorldPosition(new THREE.Vector3());
-                                 const midPoint = worldPosL.lerp(worldPosR, 0.5);
-                                 const forwardOffset = isFlipped ? -0.1 : 0.1;
-                                 const localMidPoint = group.worldToLocal(midPoint.clone()); // Ensure group exists
-                                 projectileMesh.position.set(localMidPoint.x, localMidPoint.y, localMidPoint.z + forwardOffset);
-                                 // console.log(`[${initialFacing} Growth Pos] LocalMid: ${localMidPoint.x.toFixed(2)},${localMidPoint.y.toFixed(2)},${localMidPoint.z.toFixed(2)} -> Proj Pos: ${projectileMesh.position.x.toFixed(2)},${projectileMesh.position.y.toFixed(2)},${projectileMesh.position.z.toFixed(2)}`);
-                             } else {
-                                 projectileMesh.position.set(...specialPowerPosition);
-                             }
-
-                            // Check for transition to throwing (based on total time including delay)
-                            if (growingElapsedTime >= (GROWTH_START_DELAY_MS + GROWTH_DURATION_MS)) {
-                                console.log(`[PlayerCharacter ${initialFacing} Projectile] Growth finished. Transitioning to throwing.`);
-                                setSpecialPowerStatus('throwing');
-                                projectileMesh.userData.throwStartTime = now;
-                            }
-                            break;
-                        }
-
-                        case 'throwing': {
-                            const throwStartTime = (projectileMesh.userData.throwStartTime as number | undefined) ?? now;
-                             if (!projectileMesh.userData.throwStartTime) projectileMesh.userData.throwStartTime = throwStartTime;
-                             // Store initial X position if not already stored
-                             if (projectileMesh.userData.initialX === undefined || projectileMesh.userData.initialX === null) {
-                                 projectileMesh.userData.initialX = projectileMesh.position.x;
-                             }
- 
-                            const throwingElapsedTime = now - throwStartTime;
-                            const throwProgress = Math.min(throwingElapsedTime / THROW_DURATION_MS, 1);
-
-                            // Movement Logic
-                            const throwVelocity = 15; // Adjust speed as needed
-                            // Determine direction based on current facing (updated by isFlipped state)
-                            const direction = isFlipped ? -1 : 1; // If flipped (facing left), move in negative X; otherwise positive X
-                            projectileMesh.position.x += throwVelocity * direction * delta; // Move along the projectile's local X axis
-
-                            // Log throwing values
-                            // console.log(`[${initialFacing} Throw] Elapsed: ${throwingElapsedTime.toFixed(0)}, Progress: ${throwProgress.toFixed(2)}, X Pos: ${projectileMesh.position.x.toFixed(3)}, Direction: ${direction}`);
-
-                            // Deactivation Logic
-                            // Calculate distance based on local X movement relative to initial X
-                            const initialX = projectileMesh.userData.initialX ?? 0; // Use initial X stored in userData
-                            const currentDistance = Math.abs(projectileMesh.position.x - initialX);
-                            if (throwingElapsedTime >= THROW_DURATION_MS || currentDistance > MAX_THROW_DISTANCE) {
-                                console.log(`[PlayerCharacter ${initialFacing} Projectile] Despawning - Time: ${throwingElapsedTime >= THROW_DURATION_MS}, Dist: ${currentDistance > MAX_THROW_DISTANCE}`);
-                                setSpecialPowerActive(false);
-                                setSpecialPowerStatus('idle');
-                                isActionInProgress.current = false; // Release action lock
-                                projectileMesh.userData.startTime = null;
-                                projectileMesh.userData.throwStartTime = null;
-                                projectileMesh.userData.initialX = null; // Clear initial X
-                            }
-                            break;
+                    // Priority: Special > Block/Duck > Punch/Kick
+                    if (currentInput.special && !isActionInProgress.current && !isBlockingRef.current && !isDuckingRef.current) {
+                        triggerSpecialPowerThrow();
+                    } else if (shouldBeBlocking && !isBlockingRef.current && !isActionInProgress.current) {
+                        triggerBlock();
+                    } else if (!shouldBeBlocking && isBlockingRef.current && !isActionInProgress.current) {
+                        stopBlock();
+                    } else if (shouldBeDucking && !isDuckingRef.current && !isBlockingRef.current && !isActionInProgress.current) {
+                        triggerDuck();
+                    } else if (!shouldBeDucking && isDuckingRef.current && !isActionInProgress.current) {
+                        triggerStandUp();
+                    } else if (currentInput.punch && !isActionInProgress.current && !isBlockingRef.current) { // Only punch if not blocking
+                        if (isDuckingRef.current && actions.DuckKick) { // Check DuckKick action exists
+                            triggerKick();
+                        } else if (!isDuckingRef.current) {
+                            triggerPunch();
                         }
                     }
-
-                    // Look At Camera
-                    const cameraPosition = state.camera.position;
-                     // Get the projectile's world position for accurate lookAt
-                     const projectileWorldPos = projectileMesh.getWorldPosition(new THREE.Vector3());
-                    projectileMesh.lookAt(cameraPosition.x, projectileWorldPos.y, cameraPosition.z);
                 }
-            } else if (!specialPowerActive && projectileMeshRef.current) {
-                 // Clean up userData if projectile becomes inactive and mesh still exists
-                 projectileMeshRef.current.userData.startTime = null;
-                 projectileMeshRef.current.userData.throwStartTime = null;
-            }
+                // --- END OF ACTION TRIGGERING LOGIC ---
 
-            // Animation Control (Walk/Idle Trigger - Only during FIGHT)
-            const isCurrentlyMovingHorizontallyOnGround = isGrounded && targetVelocityX !== 0;
-            if (!isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
-                const walkAction = actions?.WalkCycle;
-                const idleAction = actions?.IdleBreath;
-                if (isCurrentlyMovingHorizontallyOnGround) {
-                    if (isInStance.current && idleAction) idleAction.fadeOut(0.2);
-                    if (walkAction) walkAction.reset().fadeIn(0.2).play();
-                } else {
-                    if (walkAction) walkAction.fadeOut(0.2);
-                    if (idleAction && isInStance.current) idleAction.reset().fadeIn(0.3).play();
+                // --- Update Projectile State (Movement, Scale, Transitions) ---
+                if (specialPowerActive && specialImageTexture) {
+                    const projectileMesh = projectileMeshRef.current; // Use the ref
+                    if (projectileMesh) { // Check if mesh exists via ref
+                        const now = performance.now();
+                        const isFlipped = projectileIsFlipped;
+
+                        switch (specialPowerStatus) {
+                            case 'growing': {
+                                const activationTime = (projectileMesh.userData.startTime as number | undefined) ?? now;
+                                if (!projectileMesh.userData.startTime) projectileMesh.userData.startTime = activationTime;
+
+                                const growingElapsedTime = now - activationTime;
+                                // Start growth only after delay
+                                const effectiveElapsedTime = Math.max(0, growingElapsedTime - GROWTH_START_DELAY_MS);
+                                const growthProgress = Math.min(effectiveElapsedTime / GROWTH_DURATION_MS, 1);
+
+                                // Interpolate scale
+                                const startScale = 0.01;
+                                const targetScale = BASE_PLANE_SIZE;
+                                const currentScale = THREE.MathUtils.lerp(startScale, targetScale, growthProgress);
+                                const aspect = specialImageTexture.image ? specialImageTexture.image.width / specialImageTexture.image.height : 1;
+                                projectileMesh.scale.set(currentScale * aspect, currentScale, 1);
+
+                                // Log growth values
+                                // console.log(`[${initialFacing} Growth] Elapsed: ${growingElapsedTime.toFixed(0)}, EffElapsed: ${effectiveElapsedTime.toFixed(0)}, Progress: ${growthProgress.toFixed(2)}, Scale: ${currentScale.toFixed(3)}`);
+
+                                // Update position between hands continuously
+                                // ... (position logic remains the same) ...
+                                 const lHand = skeletonRef.current?.bones.find(b => b.name === 'L_Hand');
+                                 const rHand = skeletonRef.current?.bones.find(b => b.name === 'R_Hand');
+                                 if (lHand && rHand && group) { // Ensure group exists
+                                     const worldPosL = lHand.getWorldPosition(new THREE.Vector3());
+                                     const worldPosR = rHand.getWorldPosition(new THREE.Vector3());
+                                     const midPoint = worldPosL.lerp(worldPosR, 0.5);
+                                     const forwardOffset = isFlipped ? -0.1 : 0.1;
+                                     const localMidPoint = group.worldToLocal(midPoint.clone()); // Ensure group exists
+                                     projectileMesh.position.set(localMidPoint.x, localMidPoint.y, localMidPoint.z + forwardOffset);
+                                     // console.log(`[${initialFacing} Growth Pos] LocalMid: ${localMidPoint.x.toFixed(2)},${localMidPoint.y.toFixed(2)},${localMidPoint.z.toFixed(2)} -> Proj Pos: ${projectileMesh.position.x.toFixed(2)},${projectileMesh.position.y.toFixed(2)},${projectileMesh.position.z.toFixed(2)}`);
+                                 } else {
+                                     projectileMesh.position.set(...specialPowerPosition);
+                                 }
+
+                                // Check for transition to throwing (based on total time including delay)
+                                if (growingElapsedTime >= (GROWTH_START_DELAY_MS + GROWTH_DURATION_MS)) {
+                                    console.log(`[PlayerCharacter ${initialFacing} Projectile] Growth finished. Transitioning to throwing.`);
+                                    setSpecialPowerStatus('throwing');
+                                    projectileMesh.userData.throwStartTime = now;
+                                }
+                                break;
+                            }
+
+                            case 'throwing': {
+                                const throwStartTime = (projectileMesh.userData.throwStartTime as number | undefined) ?? now;
+                                 if (!projectileMesh.userData.throwStartTime) projectileMesh.userData.throwStartTime = throwStartTime;
+                                 // Store initial X position if not already stored
+                                 if (projectileMesh.userData.initialX === undefined || projectileMesh.userData.initialX === null) {
+                                     projectileMesh.userData.initialX = projectileMesh.position.x;
+                                 }
+ 
+                                const throwingElapsedTime = now - throwStartTime;
+                                const throwProgress = Math.min(throwingElapsedTime / THROW_DURATION_MS, 1);
+
+                                // Movement Logic
+                                const throwVelocity = 15; // Adjust speed as needed
+                                // Determine direction based on current facing (updated by isFlipped state)
+                                const direction = isFlipped ? -1 : 1; // If flipped (facing left), move in negative X; otherwise positive X
+                                projectileMesh.position.x += throwVelocity * direction * delta; // Move along the projectile's local X axis
+
+                                // Log throwing values
+                                // console.log(`[${initialFacing} Throw] Elapsed: ${throwingElapsedTime.toFixed(0)}, Progress: ${throwProgress.toFixed(2)}, X Pos: ${projectileMesh.position.x.toFixed(3)}, Direction: ${direction}`);
+
+                                // Deactivation Logic
+                                // Calculate distance based on local X movement relative to initial X
+                                const initialX = projectileMesh.userData.initialX ?? 0; // Use initial X stored in userData
+                                const currentDistance = Math.abs(projectileMesh.position.x - initialX);
+                                if (throwingElapsedTime >= THROW_DURATION_MS || currentDistance > MAX_THROW_DISTANCE) {
+                                    console.log(`[PlayerCharacter ${initialFacing} Projectile] Despawning - Time: ${throwingElapsedTime >= THROW_DURATION_MS}, Dist: ${currentDistance > MAX_THROW_DISTANCE}`);
+                                    setSpecialPowerActive(false);
+                                    setSpecialPowerStatus('idle');
+                                    isActionInProgress.current = false; // Release action lock
+                                    projectileMesh.userData.startTime = null;
+                                    projectileMesh.userData.throwStartTime = null;
+                                    projectileMesh.userData.initialX = null; // Clear initial X
+                                }
+                                break;
+                            }
+                        }
+
+                        // Look At Camera
+                        const cameraPosition = state.camera.position;
+                         // Get the projectile's world position for accurate lookAt
+                         const projectileWorldPos = projectileMesh.getWorldPosition(new THREE.Vector3());
+                        projectileMesh.lookAt(cameraPosition.x, projectileWorldPos.y, cameraPosition.z);
+                    }
+                } else if (!specialPowerActive && projectileMeshRef.current) {
+                     // Clean up userData if projectile becomes inactive and mesh still exists
+                     projectileMeshRef.current.userData.startTime = null;
+                     projectileMeshRef.current.userData.throwStartTime = null;
                 }
-                isMovingHorizontally.current = isCurrentlyMovingHorizontallyOnGround;
-            }
 
-            // Mixer update for FIGHT phase
-            if (mixer) {
-                mixer.update(delta);
-            }
-            // ***** End of FIGHT phase logic block *****
+                // Animation Control (Walk/Idle Trigger - Only during FIGHT)
+                const isCurrentlyMovingHorizontallyOnGround = isGrounded && targetVelocityX !== 0;
+                if (!isActionInProgress.current && isGrounded && isCurrentlyMovingHorizontallyOnGround !== isMovingHorizontally.current) {
+                    const walkAction = actions?.WalkCycle;
+                    const idleAction = actions?.IdleBreath;
+                    if (isCurrentlyMovingHorizontallyOnGround) {
+                        if (isInStance.current && idleAction) idleAction.fadeOut(0.2);
+                        if (walkAction) walkAction.reset().fadeIn(0.2).play();
+                    } else {
+                        if (walkAction) walkAction.fadeOut(0.2);
+                        if (idleAction && isInStance.current) idleAction.reset().fadeIn(0.3).play();
+                    }
+                    isMovingHorizontally.current = isCurrentlyMovingHorizontallyOnGround;
+                }
+
+                // Mixer update for FIGHT phase
+                if (mixer) {
+                    mixer.update(delta);
+                }
+            } // --- End of FIGHT phase specific logic ---
 
         }); // End useFrame
 

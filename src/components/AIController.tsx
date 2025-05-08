@@ -13,6 +13,7 @@ type AIInputState = {
     duck: boolean;
     block: boolean;
     jump: boolean;
+    special: boolean; // <-- ADDED: Special attack
 };
 
 interface AIControllerProps {
@@ -30,6 +31,8 @@ const ENGAGE_DISTANCE = 1.5; // Distance at which AI tries to engage/fight
 const CLOSE_DISTANCE = 0.5; // Very close distance, might back off or block
 const ATTACK_PROBABILITY = 0.6; // Probability of attacking when in range
 const BLOCK_PROBABILITY = 0.3; // Probability of blocking when opponent attacks (if not attacking)
+const SPECIAL_ATTACK_PROBABILITY = 0.4; // <-- ADDED: Probability of using special attack
+const MIN_ENERGY_FOR_SPECIAL = 50; // <-- ADDED: Minimum energy for AI to consider special
 
 
 // --- Component ---
@@ -66,8 +69,8 @@ export const AIController: React.FC<AIControllerProps> = ({
         // <-- PAUSE CHECK: Stop AI logic if paused or inactive -->
         if (!isActive || isPaused) {
             // Reset AI input when paused or inactive
-            if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block) {
-                 aiInputRef.current = { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+            if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block || aiInputRef.current.special) { // <-- ADDED: Check special
+                 aiInputRef.current = { left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false }; // <-- ADDED: Reset special
                  // TODO: Ensure PlayerCharacter reflects this reset
             }
             return;
@@ -75,8 +78,8 @@ export const AIController: React.FC<AIControllerProps> = ({
 
         if (!isActive || !playerRef.current || !opponentRef.current) {
             // Reset inputs if AI becomes inactive
-            if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block) {
-                 aiInputRef.current = { left: false, right: false, punch: false, duck: false, block: false, jump: false };
+            if (aiInputRef.current.left || aiInputRef.current.right || aiInputRef.current.punch || aiInputRef.current.block || aiInputRef.current.special) { // <-- ADDED: Check special
+                 aiInputRef.current = { left: false, right: false, punch: false, duck: false, block: false, jump: false, special: false }; // <-- ADDED: Reset special
                  // TODO: Ensure PlayerCharacter reflects this reset
             }
             return;
@@ -99,83 +102,99 @@ export const AIController: React.FC<AIControllerProps> = ({
         const playerIsAttacking = player.isAttacking();
         const playerIsBlocking = player.isBlocking();
         const playerIsGrounded = player.getHasHitGround(); // Essential for movement/jumping decisions
+        const playerEnergy = player.getCurrentEnergy(); // <-- ADDED: Get AI's current energy
 
 
         // --- Decision Making ---
         decisionTimer.current += delta;
         if (decisionTimer.current >= AI_DECISION_INTERVAL) {
             decisionTimer.current = 0; // Reset timer
-            const currentInput = { ...aiInputRef.current }; // Copy current state
+            
+            // What the PlayerCharacter IS currently doing (based on its internal state refs)
+            const pcIsAttacking = player.isAttacking();
+            const pcIsBlocking = player.isBlocking();
 
-             // Reset momentary actions like punch
-             currentInput.punch = false; 
-             // Keep block/duck based on decision below
+            // Start with a new input state for this decision cycle
+            // Momentary actions (punch, special, jump) default to false.
+            // Block defaults to false and is actively decided.
+            // Movement (left, right) can be initiated here or preserved if AI is in a continuous move.
+            // Duck is not used by AI yet.
+            const newAIInput: InputState = {
+                left: false, // Will be decided by movement logic
+                right: false, // Will be decided by movement logic
+                punch: false,
+                duck: false, 
+                block: false, // Default to NOT blocking this cycle
+                jump: false, 
+                special: false
+            };
 
-            // 1. Movement Logic (only if grounded and not attacking/blocking)
-            if (playerIsGrounded && !playerIsAttacking && !playerIsBlocking) {
+            // --- 1. MOVEMENT DECISION LOGIC ---
+            // AI decides to move only if grounded and NOT currently in an attack animation from PlayerCharacter.
+            // This movement can be overridden if an action (like block/punch/special) is taken.
+            if (playerIsGrounded && !pcIsAttacking) {
                 if (distanceX > ENGAGE_DISTANCE) {
                     // Move towards opponent
                     if (playerPos.x < opponentPos.x) {
-                        currentInput.left = false;
-                        currentInput.right = true;
+                        newAIInput.right = true;
                     } else {
-                        currentInput.left = true;
-                        currentInput.right = false;
+                        newAIInput.left = true;
                     }
                 } else if (distanceX < CLOSE_DISTANCE) {
-                    // Too close, back off slightly? Or stand ground.
-                    // For now, stop moving. Could add backing off later.
-                    currentInput.left = false;
-                    currentInput.right = false;
+                    // Too close, stand still (could add back-off later)
+                    // newAIInput.left/right remain false
                 } else {
-                    // In engage range, stop moving horizontally to fight
-                    currentInput.left = false;
-                    currentInput.right = false;
+                    // In engage range, stand still to prepare for actions
+                    // newAIInput.left/right remain false
                 }
-            } else if (!playerIsGrounded) {
-                 // Stop horizontal movement input if airborne
-                 currentInput.left = false;
-                 currentInput.right = false;
-            }
+            } 
+            // No else if (!playerIsGrounded) here, as left/right are already false by default.
+            // If airborne, no new movement commands are issued.
 
-
-            // 2. Action Logic (Attack/Block) - (only if grounded and not already doing something)
-             if (playerIsGrounded && !playerIsAttacking && !playerIsBlocking) {
-                currentInput.block = false; // Default to not blocking unless decided below
-
-                if (distanceX < ENGAGE_DISTANCE) {
-                    // Opponent is attacking, decide to block?
-                    if (opponentIsAttacking && Math.random() < BLOCK_PROBABILITY) {
-                         console.log("[AI] Deciding to Block!");
-                         currentInput.block = true;
-                         currentInput.punch = false; // Can't attack and block
-                         currentInput.left = false;  // Stop moving when blocking
-                         currentInput.right = false;
-                    } 
-                    // Opponent not attacking, decide to attack?
-                    else if (!opponentIsAttacking && Math.random() < ATTACK_PROBABILITY) {
-                         console.log("[AI] Deciding to Punch!");
-                         currentInput.punch = true; // Trigger punch (momentary)
-                         currentInput.block = false;
-                         // Optional: stop moving briefly when punching?
-                         // currentInput.left = false;
-                         // currentInput.right = false;
+            // --- 2. ACTION DECISION LOGIC (Block, Special, Punch) ---
+            // Decisions are made if grounded and not already in a PC-driven attack animation.
+            if (playerIsGrounded && !pcIsAttacking) {
+                // A. Decide to BLOCK if opponent is attacking
+                if (opponentIsAttacking && Math.random() < BLOCK_PROBABILITY) {
+                     console.log("[AI] Decision: BLOCK");
+                     newAIInput.block = true;
+                     // If blocking, explicitly stop other actions and movement for this cycle.
+                     newAIInput.punch = false;
+                     newAIInput.special = false;
+                     newAIInput.left = false; 
+                     newAIInput.right = false;
+                }
+                // B. If NOT blocking (i.e., block condition above was false or random check failed),
+                //    then consider Special or Punch if opponent is NOT attacking.
+                else if (!newAIInput.block && !opponentIsAttacking && distanceX < ENGAGE_DISTANCE) { 
+                    if (playerEnergy >= MIN_ENERGY_FOR_SPECIAL && Math.random() < SPECIAL_ATTACK_PROBABILITY) {
+                        console.log("[AI] Decision: SPECIAL ATTACK");
+                        newAIInput.special = true;
+                        newAIInput.left = false; // Stop movement to perform special
+                        newAIInput.right = false;
+                    }
+                    else if (Math.random() < ATTACK_PROBABILITY) {
+                         console.log("[AI] Decision: PUNCH");
+                         newAIInput.punch = true;
+                         newAIInput.left = false; // Stop movement to perform punch
+                         newAIInput.right = false;
                     }
                 }
             }
+            
+            // Update the ref with the newly decided input state.
+            aiInputRef.current = newAIInput;
 
-            // Apply the decided inputs
-            aiInputRef.current = currentInput;
-             // TODO: Make PlayerCharacter react to aiInputRef changes
         } else {
-             // Reset punch immediately after one frame (if it was set)
-             // This simulates a quick key press
+             // Reset momentary actions (punch, special) immediately after one frame if they were set.
+             // Block and movement (left/right) are persistent until the next AI_DECISION_INTERVAL.
              if(aiInputRef.current.punch) {
                  aiInputRef.current.punch = false;
-                 // TODO: Make PlayerCharacter react
              }
+             if(aiInputRef.current.special) {
+                aiInputRef.current.special = false;
+            }
         }
-
     });
 
     // This component doesn't render anything itself
