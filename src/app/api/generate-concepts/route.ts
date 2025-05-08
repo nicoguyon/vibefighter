@@ -5,6 +5,9 @@ import Replicate from 'replicate';
 if (!process.env.REPLICATE_API_TOKEN) {
   throw new Error('Missing REPLICATE_API_TOKEN environment variable.');
 }
+if (!process.env.LORA_LINK) {
+  throw new Error('Missing LORA_LINK environment variable.');
+}
 if (!process.env.CIVITAI_API_TOKEN) {
     console.warn('Missing CIVITAI_API_TOKEN environment variable. Lora downloads might fail if model is private.');
 }
