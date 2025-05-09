@@ -44,6 +44,27 @@ const ROTATION_START_POS_TOLERANCE = 0.1; // Tolerance for starting position che
 const FLOOR_TEXTURE_REPEAT = 8; 
 const VERTICAL_COLLISION_THRESHOLD = 0.5; // Allow jumping over if Y difference > this
 
+// --- ADD Punch Hit Sound Assets ---
+const PUNCH_HIT_SOUNDS = [
+    '/sounds/fight/punch/punch1.mp3',
+    '/sounds/fight/punch/punch2.mp3',
+    '/sounds/fight/punch/punch3.mp3',
+    '/sounds/fight/punch/punch4.mp3',
+    '/sounds/fight/punch/punch5.mp3',
+    '/sounds/fight/punch/punch6.mp3',
+    '/sounds/fight/punch/punch7.mp3',
+    '/sounds/fight/punch/punch8.mp3',
+];
+
+// Helper function to get a random sound from an array (can be a shared utility later)
+const getRandomSound = (sounds: string[]): string => {
+    if (sounds.length === 0) {
+        console.warn('[BattleScene] Attempted to get random sound from empty array.');
+        return ''; // Return empty string or a path to a default silent sound
+    }
+    return sounds[Math.floor(Math.random() * sounds.length)];
+};
+
 // --- ADD Projectile Constants ---
 const INITIAL_PROJECTILE_SCALE = 0.01;
 const BASE_PLANE_SIZE = 0.35; // <-- Reduced Size // Base size of the projectile plane
@@ -546,12 +567,14 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
                     if (p1AttackingPunchKick && distXHit < HIT_DISTANCE && p1CanDamage && playersLandedHit) {
                         const damage = p2Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
                         p1.confirmHit(); // Attacker confirms their hit (e.g., to stop their damage window)
+                        playSoundEffect(getRandomSound(PUNCH_HIT_SOUNDS)); // <-- Play punch hit sound
                         p2?.triggerHitFlicker(); // Trigger flicker on Player 2 (the one hit)
                         setPlayer2Health(h => Math.max(0, h - damage));
                     }
                     if (p2AttackingPunchKick && distXHit < HIT_DISTANCE && p2CanDamage && playersLandedHit) {
                         const damage = p1Blocking ? PUNCH_DAMAGE * BLOCK_DAMAGE_MULTIPLIER : PUNCH_DAMAGE;
                         p2.confirmHit(); // Attacker confirms their hit
+                        playSoundEffect(getRandomSound(PUNCH_HIT_SOUNDS)); // <-- Play punch hit sound
                         p1?.triggerHitFlicker(); // Trigger flicker on Player 1 (the one hit)
                         setPlayer1Health(h => Math.max(0, h - damage));
                     }

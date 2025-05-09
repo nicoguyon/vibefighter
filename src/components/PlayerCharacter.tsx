@@ -5,6 +5,7 @@ import { useGLTF, useAnimations, useTexture } from '@react-three/drei';
 import { Texture } from 'three';
 // import { useBox, type BoxProps, type BodyProps } from '@react-three/cannon'; // Keep commented
 // Remove Rapier imports
+import { playSoundEffect } from '@/utils/playSoundEffect'; // <-- Import sound utility
 
 // Import animation types and functions
 import {
@@ -126,6 +127,29 @@ const GROWTH_START_DELAY_MS = BASE_THROW_ANIM_DURATION * 0.2; // e.g., 200ms
 const THROW_DURATION_MS = 800; // Duration for the projectile to travel
 const MAX_THROW_DISTANCE = 20; // Max distance the projectile travels
 const BASE_PLANE_SIZE = 0.5; // Base size of the projectile plane
+
+// --- Sound Effect Arrays ---
+// Add any new sound file paths to these arrays when you add them to the public/sounds folders.
+const JUMP_SOUNDS = [
+    '/sounds/fight/jump/jump1.mp3',
+    '/sounds/fight/jump/jump2.mp3',
+    '/sounds/fight/jump/jump3.mp3',
+    '/sounds/fight/jump/jump4.mp3'
+];
+const SPECIAL_SOUNDS = [
+    '/sounds/fight/special/special1.mp3',
+    '/sounds/fight/special/special2.mp3',
+    '/sounds/fight/special/special3.mp3'
+];
+
+// Helper function to get a random sound from an array
+const getRandomSound = (sounds: string[]): string => {
+    if (sounds.length === 0) {
+        console.warn('[PlayerCharacter] Attempted to get random sound from empty array.');
+        return ''; // Return empty string or a path to a default silent sound
+    }
+    return sounds[Math.floor(Math.random() * sounds.length)];
+};
 
 
 // -------- Special Power Projectile Component Definition --------
@@ -843,6 +867,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                  return;
             }
 
+            playSoundEffect(getRandomSound(SPECIAL_SOUNDS)); // <-- Play Special Sound
             console.log(`[PlayerCharacter ${initialFacing} ${playerIndex}] Triggering Special Power Throw Animation & Launch Signal...`);
             isActionInProgress.current = true;
             isAttackingRef.current = true; // Keep?
@@ -1390,6 +1415,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 // Vertical Movement (Jump & Gravity)
                 if (currentInput.jump && isGrounded && !isActionInProgress.current) {
                     velocity.y = JUMP_FORCE;
+                    playSoundEffect(getRandomSound(JUMP_SOUNDS)); // <-- Play Jump Sound
                      if (currentInput.left) velocity.x = -JUMP_HORIZONTAL_SPEED;
                      else if (currentInput.right) velocity.x = JUMP_HORIZONTAL_SPEED;
                      else velocity.x = 0; // Keep jump X velocity setting
