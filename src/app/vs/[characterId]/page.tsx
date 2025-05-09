@@ -14,6 +14,7 @@ interface Character {
     concept_image_url: string | null;
     name_audio_url: string | null;
     status: string | null; // Ensure we only pick 'complete' opponents
+    special_image_url: string | null; // Added for special power
 }
 
 // --- NEW: Define Location Interface ---
@@ -82,7 +83,7 @@ export default function VsPage() {
                 // Fetch chosen character
                 const { data: chosenData, error: chosenError } = await supabase
                     .from('characters')
-                    .select('id, name, concept_image_url, name_audio_url, status, model_glb_url')
+                    .select('id, name, concept_image_url, name_audio_url, status, model_glb_url, special_image') // Fetch special_image
                     .eq('id', characterId)
                     .single();
 
@@ -90,14 +91,18 @@ export default function VsPage() {
                     throw new Error(chosenError?.message || 'Failed to load your fighter.');
                 }
                  // Ensure image URL is absolute
-                 chosenData.concept_image_url = ensureAbsoluteUrl(chosenData.concept_image_url);
-                 chosenData.name_audio_url = ensureAbsoluteUrl(chosenData.name_audio_url);
-                 setChosenCharacter(chosenData);
+                 const processedChosenCharacter: Character = {
+                    ...chosenData,
+                    concept_image_url: ensureAbsoluteUrl(chosenData.concept_image_url),
+                    name_audio_url: ensureAbsoluteUrl(chosenData.name_audio_url),
+                    special_image_url: ensureAbsoluteUrl(chosenData.special_image) // Process special_image and assign to correct field
+                 };
+                 setChosenCharacter(processedChosenCharacter);
 
                 // Fetch all *other* potential opponents who are complete
                 const { data: opponentData, error: opponentError } = await supabase
                     .from('characters')
-                    .select('id, name, concept_image_url, name_audio_url, status, model_glb_url')
+                    .select('id, name, concept_image_url, name_audio_url, status, model_glb_url, special_image') // Fetch special_image
                     .neq('id', characterId) // Exclude the chosen character
                     .eq('status', 'complete') // Only select complete characters
                     .not('concept_image_url', 'is', null); // Must have an image
@@ -109,9 +114,10 @@ export default function VsPage() {
                     const processedOpponents = opponentData.map(opp => ({
                        ...opp,
                        concept_image_url: ensureAbsoluteUrl(opp.concept_image_url),
-                       name_audio_url: ensureAbsoluteUrl(opp.name_audio_url)
+                       name_audio_url: ensureAbsoluteUrl(opp.name_audio_url),
+                       special_image_url: ensureAbsoluteUrl(opp.special_image) // Process special_image
                    }));
-                   setOpponents(processedOpponents);
+                   setOpponents(processedOpponents as Character[]);
                 }
 
             } catch (err: any) {
@@ -435,6 +441,18 @@ export default function VsPage() {
                  <h2 className="text-4xl font-bold text-logo-yellow drop-shadow-[3px_3px_0_rgba(0,0,0,0.8)] uppercase tracking-wider">
                      {chosenCharacter.name}
                  </h2>
+                {/* --- NEW: Chosen Character Special Power Image --- */}
+                {chosenCharacter.special_image_url && (
+                    <div className="mt-4 w-full max-w-xs h-20 relative">
+                        <Image
+                            src={chosenCharacter.special_image_url}
+                            alt={`${chosenCharacter.name}'s special power`}
+                            fill
+                            style={{ objectFit: 'contain' }} // Use contain to show the whole image
+                            sizes="(max-width: 768px) 25vw, 20vw"
+                        />
+                    </div>
+                )}
              </div>
 
             {/* VS Text */}
@@ -473,6 +491,19 @@ export default function VsPage() {
                  <h2 className={`text-4xl font-bold text-logo-yellow drop-shadow-[3px_3px_0_rgba(0,0,0,0.8)] uppercase tracking-wider transition-opacity duration-100 ${isAnimating ? 'opacity-75' : 'opacity-100'}`}>
                      {displayOpponent?.name || '??????'}
                  </h2>
+                {/* --- NEW: Opponent Special Power Image --- */}
+                {displayOpponent?.special_image_url && (
+                    <div className="mt-4 w-full max-w-xs h-20 relative">
+                        <Image
+                            src={displayOpponent.special_image_url}
+                            alt={`${displayOpponent.name}'s special power`}
+                            fill
+                            style={{ objectFit: 'contain' }} // Use contain to show the whole image
+                            sizes="(max-width: 768px) 25vw, 20vw"
+                            key={`${displayOpponent.id}-special`} // Add key for animation consistency if opponent changes
+                        />
+                    </div>
+                )}
              </div>
 
              {/* Choose Location Button Container - Replaces Start Fight */}

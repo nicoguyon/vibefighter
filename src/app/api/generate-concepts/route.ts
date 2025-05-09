@@ -11,6 +11,10 @@ if (!process.env.LORA_LINK) {
 if (!process.env.CIVITAI_API_TOKEN) {
     console.warn('Missing CIVITAI_API_TOKEN environment variable. Lora downloads might fail if model is private.');
 }
+if (!process.env.LORA_TOKEN) {
+  // It's a style token, so we can default it or warn. Let's warn for now.
+  console.warn('Missing LORA_TOKEN environment variable. Defaulting to empty string for style.');
+}
 
 
 const replicate = new Replicate({
@@ -18,6 +22,14 @@ const replicate = new Replicate({
 });
 
 const loraWeights = process.env.LORA_LINK;
+const loraStyleToken = process.env.LORA_TOKEN; // Keep as potentially undefined
+let loraScale = 1; // Default LORA_SCALE
+if (process.env.LORA_SCALE) {
+    const parsedScale = parseFloat(process.env.LORA_SCALE);
+    if (!isNaN(parsedScale)) {
+        loraScale = parsedScale;
+    }
+}
 
 // Define the expected input structure
 interface RequestBody {
@@ -47,24 +59,30 @@ export async function POST(req: NextRequest) {
     }
 
     // Construct the full prompt
-    const fullPrompt = `Full body front facing arms along the body humanoid like detailed 3D render of ${userPrompt}, ningraphix style, on a neutral black background`;
+    let fullPrompt = `Full body front facing arms along the body humanoid like detailed 3D render of ${userPrompt}`;
+    if (loraStyleToken && loraStyleToken.trim() !== "") {
+        fullPrompt += `, ${loraStyleToken.trim()}`;
+    }
+    fullPrompt += `, on a neutral black background`;
 
     // Prepare input for Replicate API
-    const input = {
+    const input: any = {
         prompt: fullPrompt,
         go_fast: false,
         guidance: 3,
-        lora_scale: 1,
         megapixels: "1", // Keeping settings from example
         num_outputs: 2,
         aspect_ratio: "9:16", // Vertical aspect ratio, good for characters
-        // Ensure the Civitai token is appended if available
-        lora_weights: loraWeights,
         output_format: "jpg", // Using jpg as requested
         output_quality: 80,
         prompt_strength: 0.8,
         num_inference_steps: 28
     };
+
+    if (loraWeights && loraWeights.trim() !== "") {
+        input.lora_weights = loraWeights.trim();
+        input.lora_scale = loraScale; // Use the parsed or default LORA_SCALE
+    }
 
     console.log("Running Replicate with input:", input);
 

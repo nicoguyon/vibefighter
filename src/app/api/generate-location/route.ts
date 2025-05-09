@@ -20,6 +20,10 @@ if (!process.env.CLOUDFLARE_ACCOUNT_ID) throw new Error("Missing CLOUDFLARE_ACCO
 if (!process.env.R2_ACCESS_KEY_ID) throw new Error("Missing R2_ACCESS_KEY_ID");
 if (!process.env.R2_SECRET_ACCESS_KEY) throw new Error("Missing R2_SECRET_ACCESS_KEY");
 if (!process.env.LORA_LINK) throw new Error('Missing LORA_LINK');
+if (!process.env.LORA_TOKEN) {
+    // It's a style token, so we can default it or warn. Let's warn for now.
+    console.warn('Missing LORA_TOKEN environment variable. Defaulting to empty string for style.');
+}
 // Supabase checks are done in the admin client file
 
 // --- Initialize Clients ---
@@ -41,6 +45,14 @@ const S3 = new S3Client({
 
 
 const loraWeights = process.env.LORA_LINK;
+const loraStyleToken = process.env.LORA_TOKEN; // Keep as potentially undefined
+let loraScale = 1; // Default LORA_SCALE
+if (process.env.LORA_SCALE) {
+    const parsedScale = parseFloat(process.env.LORA_SCALE);
+    if (!isNaN(parsedScale)) {
+        loraScale = parsedScale;
+    }
+}
 
 // --- Interfaces ---
 interface RequestBody { userPrompt: string; }
@@ -80,14 +92,26 @@ export async function POST(req: NextRequest) {
     try {
         // === 1. Generate Background (Replicate) ===
         console.log("Generating background with Replicate...");
-        const replicateInput = {
-            prompt: `a background for a video game of ${userPrompt}, ningraphix style`,
-            go_fast: false, guidance: 3, lora_scale: 0.9, megapixels: "1",
+        
+        let replicatePrompt = `a background for a video game of ${userPrompt}`;
+        if (loraStyleToken && loraStyleToken.trim() !== "") {
+            replicatePrompt += `, ${loraStyleToken.trim()}`;
+        }
+
+        const replicateInput: any = {
+            prompt: replicatePrompt,
+            go_fast: false, guidance: 3, /*lora_scale: 0.9,*/ megapixels: "1",
             num_outputs: 1, aspect_ratio: "21:9",
-            lora_weights: loraWeights,
+            // lora_weights: loraWeights, // Will be added conditionally
             output_format: "jpg", output_quality: 80, prompt_strength: 0.8,
             num_inference_steps: 28
         };
+
+        if (loraWeights && loraWeights.trim() !== "") {
+            replicateInput.lora_weights = loraWeights.trim();
+            replicateInput.lora_scale = loraScale; // Use the parsed or default LORA_SCALE
+        }
+
         const replicateOutput: unknown = await replicate.run("black-forest-labs/flux-dev-lora", { input: replicateInput });
 
         // Extract Replicate URL
