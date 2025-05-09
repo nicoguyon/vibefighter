@@ -8,9 +8,6 @@ if (!process.env.REPLICATE_API_TOKEN) {
 if (!process.env.LORA_LINK) {
   throw new Error('Missing LORA_LINK environment variable.');
 }
-if (!process.env.CIVITAI_API_TOKEN) {
-    console.warn('Missing CIVITAI_API_TOKEN environment variable. Lora downloads might fail if model is private.');
-}
 if (!process.env.LORA_TOKEN) {
   // It's a style token, so we can default it or warn. Let's warn for now.
   console.warn('Missing LORA_TOKEN environment variable. Defaulting to empty string for style.');
