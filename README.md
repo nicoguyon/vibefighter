@@ -1,8 +1,89 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+
+# Vibe Fighter
+
+![Vibe Fighter](/public/images/vibefighter-logo.png)
+
+## About
+
+Vibe Fighter is a lously Street Fighter/Mortal Kombat influenced game of one on one fighting platform, but every character and every scene can be AI generated on the fly, with any style.
+Vibe Figther was 100% vibe coded with threeJS on Cursor. A human was only here to write prompts and click accept :)
+
+## Game play
+
+### Generate characters
+
+
+
+### Random AI opponent from generated characters of your making
+
+### Generate battle scenes backgrounds
+
+
+### Fight! Each character has a special power auto generated!
+
+Fight commands :
+- move: left/Right
+- jump: space
+- block: b
+- duck: down
+- special power: shift+space
+
+
+
 
 ## Getting Started
 
-First, run the development server:
+The is using multiple AIs:
+- Replicate for character and background generation, using your the FLUX LoRa of choice
+- Tripo3D for 3D models generation of the character and rigging --> top up and free credits on [Tripo3D API](https://platform.tripo3d.ai/)
+- Gemini for text generation and some images creation (special powers/floor design based on background)
+- Fish Audio for name audio generation
+
+Database is based on Supabase and file storage with CloudFlare R2
+
+Use exemple.env to populate your different keys and options. 
+
+Music were generated with Suno and sounds with elevenLabs
+
+### Supabase structure
+
+Do not forget to activate public access read
+
+
+### R2
+
+Do not forget for Cloudfare R2 to open CORS options
+
+### LoRa
+
+You can use any FLUX LoRa of your choice which is linkable to Replicate (Replicate, CivitAI, HuggingFace, or any hosted tensorfile) or no LoRa. If a key is required (CivitAI especially) do not forget to add it to the link
+
+Default is [N64/PS1 LoRa](https://civitai.com/models/660136) on CivitAI
+
+Examples using other LoRas :
+
+- [Ghibli style LoRa](https://civitai.com/models/433138/ghibli-style-flux-and-pdxl?modelVersionId=755852)
+
+![ghibli 1](/readme/ghibli1.jpg)
+
+![ghibli 2](/readme/ghibli2.jpg)
+
+
+- [Retro Pop](https://civitai.com/models/626444/retro-pop-ce?modelVersionId=797127)
+
+![pop 1](/readme/pop1.jpg)
+
+![pop 2](/readme/pop2.jpg)
+
+
+### Gemini 2.0 flash image for non US users
+
+If Gemini 2.0 flash image model is not available in your country, you will need to run it through a VPN
+
+
+### Run
+
+Run the development server:
 
 ```bash
 npm run dev
@@ -16,21 +97,12 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**To be able to make a fight you will need to create at least 2 users**
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Known issues & best practices
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- It's just a concept so many issues can be found
+- When creating a character, the best 3D output would be a full front facing character with hands and legs not too close to the body or to each other
+- AI fighter is not the best
+- Animations are threeJS hand made so not the best
+- No control on special attacks meaning some can be badly drawn 

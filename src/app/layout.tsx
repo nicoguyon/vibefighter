@@ -5,7 +5,7 @@ import { MuteButton } from "@/components/MuteButton";
 
 export const metadata: Metadata = {
   title: "VibeFighter",
-  description: "Create your 90s vibe fighter!",
+  description: "Generative AI Fighting game",
 };
 
 export default function RootLayout({
