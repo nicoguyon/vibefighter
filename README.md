@@ -47,6 +47,7 @@ Music were generated with Suno and sounds with elevenLabs
 
 ### Supabase structure
 
+Supabase schema is in /supabase
 Do not forget to activate public access read
 
 
