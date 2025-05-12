@@ -696,6 +696,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
                 isActive={isAIActive}
                 aiInputRef={aiInputRef}
                 isPaused={isPaused}
+                currentHealth={player2Health}
             />
 
             <mesh
@@ -875,16 +876,112 @@ export function BattleScene({
                 break;
             case 'INTRO_P1':
                 onSceneVisible();
-                playSound(player1NameAudioUrl);
-                soundDelayTimer = setTimeout(() => {
-                    console.log("[BattleScene] Playing delayed versus sound (2s delay).");
-                    playSound(versusSoundUrl);
-                }, 2000);
-                phaseTimer = setTimeout(() => setFightPhase('INTRO_P2'), 4000);
+                if (player1NameAudioUrl) {
+                    try {
+                        const nameAudio = new Audio(player1NameAudioUrl);
+                        nameAudio.onended = () => {
+                            console.log("[BattleScene] First name audio finished. Playing versus sound.");
+                            const versusAudio = new Audio(versusSoundUrl);
+                            versusAudio.onended = () => {
+                                console.log("[BattleScene] Versus sound finished. Waiting for first intro animation...");
+                                setTimeout(() => {
+                                    console.log("[BattleScene] First intro animation complete. Transitioning to INTRO_P2.");
+                                    setFightPhase('INTRO_P2');
+                                }, 2000);
+                            };
+                            versusAudio.onerror = (e) => {
+                                console.error(`[BattleScene] Error loading versus sound:`, e);
+                                setTimeout(() => {
+                                    setFightPhase('INTRO_P2');
+                                }, 2000);
+                            };
+                            versusAudio.play().catch(error => {
+                                console.error(`[BattleScene] Error playing versus sound:`, error);
+                                setTimeout(() => {
+                                    setFightPhase('INTRO_P2');
+                                }, 2000);
+                            });
+                        };
+                        nameAudio.onerror = (e) => {
+                            console.error(`[BattleScene] Error loading first name audio:`, e);
+                            playSound(versusSoundUrl);
+                            setTimeout(() => {
+                                setFightPhase('INTRO_P2');
+                            }, 2000);
+                        };
+                        nameAudio.play().catch(error => {
+                            console.error(`[BattleScene] Error playing first name audio:`, error);
+                            playSound(versusSoundUrl);
+                            setTimeout(() => {
+                                setFightPhase('INTRO_P2');
+                            }, 2000);
+                        });
+                    } catch (error) {
+                        console.error(`[BattleScene] Error creating Audio object for first name:`, error);
+                        playSound(versusSoundUrl);
+                        setTimeout(() => {
+                            setFightPhase('INTRO_P2');
+                        }, 2000);
+                    }
+                } else {
+                    console.log("[BattleScene] No first name audio URL, playing versus sound immediately.");
+                    const versusAudio = new Audio(versusSoundUrl);
+                    versusAudio.onended = () => {
+                        console.log("[BattleScene] Versus sound finished. Waiting for first intro animation...");
+                        setTimeout(() => {
+                            console.log("[BattleScene] First intro animation complete. Transitioning to INTRO_P2.");
+                            setFightPhase('INTRO_P2');
+                        }, 2000);
+                    };
+                    versusAudio.onerror = (e) => {
+                        console.error(`[BattleScene] Error loading versus sound:`, e);
+                        setTimeout(() => {
+                            setFightPhase('INTRO_P2');
+                        }, 2000);
+                    };
+                    versusAudio.play().catch(error => {
+                        console.error(`[BattleScene] Error playing versus sound:`, error);
+                        setTimeout(() => {
+                            setFightPhase('INTRO_P2');
+                        }, 2000);
+                    });
+                }
                 break;
             case 'INTRO_P2':
-                playSound(player2NameAudioUrl);
-                phaseTimer = setTimeout(() => setFightPhase('PRE_FIGHT'), 4000);
+                if (player2NameAudioUrl) {
+                    try {
+                        const nameAudio = new Audio(player2NameAudioUrl);
+                        nameAudio.onended = () => {
+                            console.log("[BattleScene] Second name audio finished. Waiting for intro animation...");
+                            setTimeout(() => {
+                                console.log("[BattleScene] Second intro animation complete. Transitioning to PRE_FIGHT.");
+                                setFightPhase('PRE_FIGHT');
+                            }, 2000);
+                        };
+                        nameAudio.onerror = (e) => {
+                            console.error(`[BattleScene] Error loading second name audio:`, e);
+                            setTimeout(() => {
+                                setFightPhase('PRE_FIGHT');
+                            }, 2000);
+                        };
+                        nameAudio.play().catch(error => {
+                            console.error(`[BattleScene] Error playing second name audio:`, error);
+                            setTimeout(() => {
+                                setFightPhase('PRE_FIGHT');
+                            }, 2000);
+                        });
+                    } catch (error) {
+                        console.error(`[BattleScene] Error creating Audio object for second name:`, error);
+                        setTimeout(() => {
+                            setFightPhase('PRE_FIGHT');
+                        }, 2000);
+                    }
+                } else {
+                    console.log("[BattleScene] No second name audio URL, waiting for intro animation...");
+                    setTimeout(() => {
+                        setFightPhase('PRE_FIGHT');
+                    }, 2000);
+                }
                 break;
             case 'PRE_FIGHT':
                 console.log("[BattleScene] Entered PRE_FIGHT. Starting 2.2s timer for READY phase...");
@@ -925,8 +1022,7 @@ export function BattleScene({
                 }
                 break;
              case 'GAME_OVER':
-                 // Log entry and the ref state
-                console.log(`[BattleScene GAME_OVER Check] Current fightPhase: ${fightPhase}, gameOverSequenceInitiatedRef: ${gameOverSequenceInitiatedRef.current}, winnerName: ${winnerName}`);
+                 console.log(`[BattleScene GAME_OVER Check] Current fightPhase: ${fightPhase}, gameOverSequenceInitiatedRef: ${gameOverSequenceInitiatedRef.current}, winnerName: ${winnerName}`);
 
                  if (!gameOverSequenceInitiatedRef.current) {
                     console.log('[BattleScene GAME_OVER] Initiating game over sequence (gameOverSequenceInitiatedRef was false).');
@@ -939,7 +1035,6 @@ export function BattleScene({
                     const winnerAudioUrl = winnerName === player1Name ? player1NameAudioUrl : player2NameAudioUrl;
                     let winsSoundPlayed = false;
                     const playWinsAndStartTimer = () => {
-                        // Log entry to this function and winsSoundPlayed state
                         console.log(`[BattleScene playWinsAndStartTimer] Entered. winsSoundPlayed: ${winsSoundPlayed}`);
                         if (winsSoundPlayed) {
                             console.log(`[BattleScene playWinsAndStartTimer] Exiting because winsSoundPlayed is true.`);
@@ -954,16 +1049,15 @@ export function BattleScene({
                             console.log("[BattleScene GAME_OVER] Cleared existing gameOverMenuTimerRef.");
                         }
                         gameOverMenuTimerRef.current = setTimeout(() => {
-                            // Log entry to timeout callback and current fightPhase
                             console.log(`[BattleScene GAME_OVER Timer Callback] Entered. Current fightPhase: ${fightPhase}. Menu should appear now.`);
-                            if (fightPhase === 'GAME_OVER') { // Check the fightPhase *at the time of execution*
+                            if (fightPhase === 'GAME_OVER') {
                                 console.log("[BattleScene GAME_OVER Timer Callback] Condition met (fightPhase is GAME_OVER). Setting isPaused and showPauseMenu to true.");
                                 setIsPaused(true);
                                 setShowPauseMenu(true);
                             } else {
                                 console.log(`[BattleScene GAME_OVER Timer Callback] Condition NOT met. fightPhase is now: ${fightPhase}. Menu will NOT appear.`);
                             }
-                            gameOverMenuTimerRef.current = null; // Clear the ref
+                            gameOverMenuTimerRef.current = null;
                         }, 5000);
                         console.log("[BattleScene GAME_OVER] 5s timer for Game Over menu SET.");
                     };
@@ -977,20 +1071,19 @@ export function BattleScene({
                             };
                             nameAudio.onerror = (e) => {
                                 console.error(`[BattleScene] Error loading winner name audio:`, e);
-                                playWinsAndStartTimer(); // Call directly on error
+                                playWinsAndStartTimer();
                             };
-                            // Ensure audio actually tries to play
                             nameAudio.play().catch(error => {
                                 console.error(`[BattleScene] Error playing winner name audio directly:`, error);
-                                playWinsAndStartTimer(); // Call directly if play() fails
+                                playWinsAndStartTimer();
                             });
                         } catch (error) {
                             console.error(`[BattleScene] Error creating Audio object for winner name:`, error);
-                            playWinsAndStartTimer(); // Call directly on error
+                            playWinsAndStartTimer();
                         }
                     } else {
                         console.log("[BattleScene GAME_OVER] winnerAudioUrl is null, calling playWinsAndStartTimer directly.");
-                        playWinsAndStartTimer(); // Call directly if no winner audio URL
+                        playWinsAndStartTimer();
                     }
                  } else {
                     console.log('[BattleScene GAME_OVER] Skipped game over sequence because gameOverSequenceInitiatedRef was true.');
@@ -1011,23 +1104,17 @@ export function BattleScene({
 
             if (determinedWinner) {
                 console.log(`[BattleScene] Game Over! Winner: ${determinedWinner}`);
-                // If a winner is determined while in FIGHT phase, set them and transition to GAME_OVER.
                 setWinnerName(determinedWinner);
                 setFightPhase('GAME_OVER');
             }
         }
-        // Optional: Handle if fightPhase is already GAME_OVER but winnerName might need an update,
-        // for instance, if winnerName was null when the phase transitioned.
         else if (fightPhase === 'GAME_OVER' && winnerName === null) {
             let potentialWinner: string | null = null;
-            // Check health conditions to determine a winner if not already set
             if (player1Health <= 0 && player2Health > 0) {
                 potentialWinner = player2Name;
             } else if (player2Health <= 0 && player1Health > 0) {
                 potentialWinner = player1Name;
             } else if (player1Health <= 0 && player2Health <= 0) {
-                // Both players at 0 health, and no winner recorded. This could be a draw.
-                // Specific game logic for draws would be needed here. For now, log it.
                 console.log("[BattleScene] GAME_OVER with null winnerName and both players at 0 health. Possible draw?");
             }
 
@@ -1036,7 +1123,7 @@ export function BattleScene({
                 setWinnerName(potentialWinner);
             }
         }
-    }, [player1Health, player2Health, fightPhase, player1Name, player2Name, winnerName]); // Removed isPaused from dependencies
+    }, [player1Health, player2Health, fightPhase, player1Name, player2Name, winnerName]);
 
     // --- Pause Menu Handlers ---
     const handleResume = () => {
@@ -1095,8 +1182,7 @@ export function BattleScene({
                     />
                 </Canvas>
 
-                {/* UI Overlay */}
-                 <div style={{
+                <div style={{
                      position: 'absolute', top: 0, left: 0, width: '100%',
                      padding: '20px', boxSizing: 'border-box', pointerEvents: 'none',
                      zIndex: 2, display: 'flex', justifyContent: 'space-between',
@@ -1106,7 +1192,6 @@ export function BattleScene({
                     <HealthBar name={player2Name} currentHealth={player2Health} maxHealth={MAX_HEALTH} alignment="right" style={{ position: 'relative' }} currentEnergy={player2Energy} maxEnergy={MAX_ENERGY_BATTLESCENE} />
                 </div>
 
-                 {/* --- Ready/Fight Text Overlay --- */}
                  <div style={{
                      position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)',
                      zIndex: 3, pointerEvents: 'none', textAlign: 'center'
@@ -1126,7 +1211,6 @@ export function BattleScene({
                     )}
                  </div>
 
-                 {/* --- Pause Menu Overlay --- */}
                  {showPauseMenu && (
                      <div style={{
                          position: 'absolute', inset: 0, zIndex: 10,
@@ -1152,7 +1236,6 @@ export function BattleScene({
     );
 }
 
-// Basic style for pause menu buttons
 const pauseButtonStyle: React.CSSProperties = {
     background: 'rgba(50, 50, 50, 0.8)',
     border: '2px solid #FFD700',
@@ -1166,6 +1249,3 @@ const pauseButtonStyle: React.CSSProperties = {
     textAlign: 'center',
     transition: 'background-color 0.2s, color 0.2s',
 }; 
-
-// --- REMOVED: Redundant constant declaration (already passed as prop) ---
-// const MAX_ENERGY_SCENECONTENT = 100; 

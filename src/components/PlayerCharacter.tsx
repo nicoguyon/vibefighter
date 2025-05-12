@@ -72,15 +72,15 @@ export interface PlayerCharacterHandle {
     getHasHitGround: () => boolean;
     isAttacking: () => boolean;
     isDucking: () => boolean;
-    isPerformingSpecialAttack: () => boolean; // <-- Add special attack check
+    isPerformingSpecialAttack: () => boolean;
     confirmHit: () => void;
     getCanDamage: () => boolean;
     isBlocking: () => boolean;
-    // --- Add Projectile Methods ---
     getProjectileState: () => { active: boolean; position: THREE.Vector3 | null };
     deactivateProjectile: () => void;
-    triggerHitFlicker: () => void; // <-- Add method to handle
-    getCurrentEnergy: () => number; // <-- ADDED: Get current energy
+    triggerHitFlicker: () => void;
+    getCurrentEnergy: () => number;
+    currentHealth: number; // Add currentHealth property
 }
 
 interface PlayerCharacterProps {
@@ -398,7 +398,7 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
         }, [isHitFlickering]); // isHitFlickering ensures correct original capture logic
 
         // --- useImperativeHandle ---
-        useImperativeHandle(ref, () => ({ 
+        useImperativeHandle(ref, () => ({
             getMainGroup: () => groupRef.current,
             getModelWrapper: () => modelWrapperRef.current,
             setPositionX: (x: number) => {
@@ -431,7 +431,6 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 }
             },
             deactivateProjectile: () => {
-                
                 setSpecialPowerActive(false);
                 setSpecialPowerStatus('idle');
                 if (projectileMeshRef.current) {
@@ -440,11 +439,12 @@ export const PlayerCharacter = memo(forwardRef<PlayerCharacterHandle, PlayerChar
                 }
             },
             triggerHitFlicker: triggerHitFlickerInternal, // Expose the memoized function for BattleScene to call on the target
-            getCurrentEnergy: () => currentEnergyRef.current // <-- ADDED: Expose current energy
+            getCurrentEnergy: () => currentEnergyRef.current, // <-- ADDED: Expose current energy
+            currentHealth: currentHealth // Add currentHealth to the exposed handle
         }), [
             isAttackingRef, canDamageRef, isBlockingRef, isDuckingRef, isSpecialAttackRef, 
             setSpecialPowerActive, setSpecialPowerStatus, 
-            triggerHitFlickerInternal, currentEnergyRef // Add triggerHitFlickerInternal and currentEnergyRef to dependencies
+            triggerHitFlickerInternal, currentEnergyRef, currentHealth // Add currentHealth to dependencies
         ]);
 
         // --- State ---
