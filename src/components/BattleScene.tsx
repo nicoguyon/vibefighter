@@ -528,7 +528,7 @@ const SceneContent: React.FC<SceneContentProps> = memo(function SceneContent({
                                 } else { // Hit Player 1
                                     setPlayer1Health(h => Math.max(0, h - damage));
                                 }
-                                playSoundEffect('/sounds/effects/special_hit.mp3');
+                                playSoundEffect('/sounds/fight/punch/punch3.mp3');
                                 shouldDeactivate = true; // Deactivate on hit
                             }
                             break; // End throwing case
